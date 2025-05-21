@@ -1,0 +1,34 @@
+{
+  "name": "crestx",
+  "version": "1.0.0",
+  "description": "CrestX - Professional Solana Memecoin Trading Bot",
+  "main": "index.js",
+  "bin": {
+    "crestx": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "setup": "node setup.js",
+    "build-exe": "pkg . --targets node18-win-x64 --output dist/crestx.exe"
+  },
+  "dependencies": {
+    "@jup-ag/core": "4.0.0-beta.21",
+    "@solana/web3.js": "^1.73.0",
+    "dotenv": "^16.0.0",
+    "input": "^1.0.1",
+    "node-fetch": "^2.6.7",
+    "telegram": "^2.15.5"
+  },
+  "devDependencies": {
+    "pkg": "^5.8.1"
+  },
+  "pkg": {
+    "scripts": ["*.js"],
+    "assets": ["session.txt", ".env", "data/**/*"]
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "author": "",
+  "license": "MIT"
+}
