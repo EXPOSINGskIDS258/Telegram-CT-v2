@@ -1,9 +1,11 @@
-// exchangeClient.js - Enhanced version with Jupiter-like functionality but compatible with newer Node
+require('dotenv').config();
 const config = require('./config');
 const fs = require('fs');
 const path = require('path');
+const axios = require('axios');
+const crypto = require('crypto');
 
-// Store simulation state
+// ----- Simulation (Paper) Setup -----
 const STATE_FILE = path.join(__dirname, 'data', 'simulation-state.json');
 let simulationState = {
   prices: {},
@@ -13,428 +15,206 @@ let simulationState = {
   lastUpdate: Date.now()
 };
 
-// Initialize or load simulation state
-(function initSimulation() {
+function initSimulation() {
   try {
-    // Create data directory if it doesn't exist
     const dataDir = path.join(__dirname, 'data');
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
-    
-    // Load existing state if available
-    if (fs.existsSync(STATE_FILE)) {
-      const data = fs.readFileSync(STATE_FILE, 'utf8');
-      const loadedState = JSON.parse(data);
-      
-      // Use loaded state or initialize
-      simulationState = {
-        ...loadedState,
-        lastUpdate: Date.now()
-      };
-      
-      console.log(`🔄 Loaded simulation state with ${Object.keys(simulationState.prices).length} tokens and $${simulationState.balance.toFixed(2)} balance`);
-    }
-  } catch (err) {
-    console.error('Error initializing simulation:', err);
-  }
-  
-  // Save state periodically
-  setInterval(saveState, 30000);
-  
-  // Run price simulation
-  simulatePriceMovements();
-})();
+    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-// Save simulation state to file
+    if (fs.existsSync(STATE_FILE)) {
+      const loaded = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+      simulationState = { ...loaded, lastUpdate: Date.now() };
+      console.log(`🔄 Loaded simulation state: $${simulationState.balance.toFixed(2)}, ${Object.keys(simulationState.prices).length} tokens`);
+    }
+  } catch (e) {
+    console.error('Simulation init error:', e);
+  }
+  setInterval(saveState, 30000);
+  simulatePriceMovements();
+}
+
 function saveState() {
   try {
     fs.writeFileSync(STATE_FILE, JSON.stringify(simulationState, null, 2));
-  } catch (err) {
-    console.error('Error saving simulation state:', err);
+  } catch (e) {
+    console.error('Save state error:', e);
   }
 }
 
-// Simulate price movements
 function simulatePriceMovements() {
   setInterval(() => {
-    // Update prices for all tokens
     for (const token in simulationState.prices) {
-      // Random price movement +/- x% based on volatility setting
-      const volatility = config.DRY_RUN_PRICE_VOLATILITY / 100;
-      const change = 1 + (Math.random() * volatility * 2 - volatility);
+      const vol = config.DRY_RUN_PRICE_VOLATILITY / 100;
+      const change = 1 + (Math.random() * vol * 2 - vol);
       simulationState.prices[token] *= change;
-      
-      // Check for order triggers
       checkOrderTriggers(token);
     }
-    
     simulationState.lastUpdate = Date.now();
   }, 5000);
 }
 
-// Check if any orders should trigger based on current prices
 function checkOrderTriggers(token) {
-  const currentPrice = simulationState.prices[token];
-  if (!currentPrice) return;
-  
-  // Find orders for this token
-  const remainingOrders = [];
-  
-  for (const order of simulationState.orders) {
-    if (order.token !== token) {
-      remainingOrders.push(order);
-      continue;
-    }
-    
-    // Check stop-loss
-    if (order.type === 'stop' && currentPrice <= order.price) {
-      console.log(`🔴 Stop-loss triggered for ${token} at ${currentPrice}`);
-      executeOrder(order, currentPrice);
-      // Don't add to remaining orders
-      continue;
-    }
-    
-    // Check take-profit
-    if (order.type === 'limit' && currentPrice >= order.price) {
-      console.log(`🟢 Take-profit triggered for ${token} at ${currentPrice}`);
-      executeOrder(order, currentPrice);
-      // Don't add to remaining orders
-      continue;
-    }
-    
-    // Order not triggered, keep it
-    remainingOrders.push(order);
+  const price = simulationState.prices[token];
+  const remaining = [];
+  for (const o of simulationState.orders) {
+    if (o.token !== token) { remaining.push(o); continue; }
+    if (o.type === 'stop' && price <= o.price) { executeSimulationOrder(o, price); continue; }
+    if (o.type === 'limit' && price >= o.price) { executeSimulationOrder(o, price); continue; }
+    remaining.push(o);
   }
-  
-  simulationState.orders = remainingOrders;
+  simulationState.orders = remaining;
 }
 
-// Execute an order when triggered
-function executeOrder(order, executionPrice) {
-  const position = simulationState.positions[order.token];
-  if (!position) return;
-  
-  // For stop-loss, close entire position
+function executeSimulationOrder(order, execPrice) {
+  const pos = simulationState.positions[order.token];
+  if (!pos) return;
   if (order.type === 'stop') {
-    const profit = (executionPrice - position.entryPrice) * position.amount;
-    console.log(`[DRY RUN] Closed position with P/L: $${profit.toFixed(2)}`);
-    
-    // Add proceeds back to balance
-    simulationState.balance += position.amount * executionPrice;
-    
-    // Remove all orders for this token
-    simulationState.orders = simulationState.orders.filter(o => o.token !== order.token);
-    
-    // Remove position
+    const pnl = (execPrice - pos.entryPrice) * pos.amount;
+    console.log(`[DRY RUN] Stop-loss ${order.token} closed for P/L $${pnl.toFixed(2)}`);
+    simulationState.balance += pos.amount * execPrice;
     delete simulationState.positions[order.token];
+    simulationState.orders = simulationState.orders.filter(o => o.token !== order.token);
+  } else if (order.type === 'limit') {
+    const takeAmt = Math.min(order.amount, pos.amount);
+    const pnl = (execPrice - pos.entryPrice) * takeAmt;
+    console.log(`[DRY RUN] Take-profit ${order.token} executed for profit $${pnl.toFixed(2)}`);
+    simulationState.balance += takeAmt * execPrice;
+    pos.amount -= takeAmt;
+    if (pos.amount <= 0) delete simulationState.positions[order.token];
+    simulationState.orders = simulationState.orders.filter(o => o.token !== order.token);
   }
-  
-  // For take-profit, reduce position size
-  if (order.type === 'limit') {
-    const profit = (executionPrice - position.entryPrice) * order.amount;
-    console.log(`[DRY RUN] Take-profit executed with profit: $${profit.toFixed(2)}`);
-    
-    // Add proceeds back to balance
-    simulationState.balance += order.amount * executionPrice;
-    
-    // Reduce position size
-    position.amount -= order.amount;
-    
-    // If position is now zero, remove it
-    if (position.amount <= 0) {
-      delete simulationState.positions[order.token];
-      
-      // Remove all orders for this token
-      simulationState.orders = simulationState.orders.filter(o => o.token !== order.token);
-    }
-  }
-  
-  // Save state after order execution
   saveState();
 }
 
-/**
- * Check token safety (liquidity + metadata)
- */
-async function checkTokenSafety(mintAddress) {
-  // Implement realistic token safety checks with artificial delays
-  await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 1000));
-  
-  // For testing, consider tokens ending with 'pump' as valid
-  if (mintAddress.toLowerCase().includes('pump')) {
-    // Realistic liquidity assessment 
-    const liquidity = 10000 + Math.random() * 90000;
-    const priceImpact = Math.random() * (liquidity > 50000 ? 3 : 7);
-    
-    // Generate plausible token name based on address
-    let name = mintAddress.slice(0, 3).toUpperCase();
-    if (mintAddress.toLowerCase().includes('sol')) {
-      name += 'SOL';
-    } else if (mintAddress.toLowerCase().includes('doge')) {
-      name += 'DOGE';
-    } else if (mintAddress.toLowerCase().includes('pepe')) {
-      name += 'PEPE';
-    } else {
-      name += 'MEME';
-    }
-    
-    return {
-      safe: priceImpact < config.MAX_PRICE_IMPACT,
-      name,
-      liquidity,
-      priceImpact
-    };
-  }
-  
-  // Generate various realistic failure reasons
-  const reasons = [
-    'Insufficient liquidity',
-    'High price impact: 15.2%',
-    'Token contract has suspicious code',
-    'Low trading volume',
-    'No trading pairs found'
-  ];
-  
-  return { 
-    safe: false, 
-    reason: reasons[Math.floor(Math.random() * reasons.length)],
-    liquidity: Math.random() * 2000
-  };
+// Initialize simulation only if in paper mode
+if (config.mode === 'paper') initSimulation();
+
+// ----- Live Order Helpers -----
+function signRequest(payload, secret) {
+  const message = JSON.stringify(payload);
+  return crypto.createHmac('sha256', secret).update(message).digest('hex');
 }
 
-/**
- * Get total USDC balance for wallet
- */
+async function placeLiveMarketOrder(symbol, amountUsdc) {
+  const url = `${config.EXCHANGE_API_BASE_URL}/orders`;
+  const body = { symbol, side: 'buy', type: 'market', quantity: amountUsdc };
+  const headers = {
+    'API-KEY': process.env.EXCHANGE_API_KEY,
+    'API-SIGN': signRequest(body, process.env.EXCHANGE_API_SECRET),
+    'Content-Type': 'application/json'
+  };
+  const resp = await axios.post(url, body, { headers });
+  return resp.data;
+}
+
+async function placeLiveStopLoss(symbol, amount, stopPrice) {
+  const url = `${config.EXCHANGE_API_BASE_URL}/orders`;
+  const body = { symbol, side: 'sell', type: 'stop', quantity: amount, stopPrice };
+  const headers = {
+    'API-KEY': process.env.EXCHANGE_API_KEY,
+    'API-SIGN': signRequest(body, process.env.EXCHANGE_API_SECRET),
+    'Content-Type': 'application/json'
+  };
+  const resp = await axios.post(url, body, { headers });
+  return resp.data;
+}
+
+async function placeLiveTakeProfit(symbol, amount, tpPrice) {
+  const url = `${config.EXCHANGE_API_BASE_URL}/orders`;
+  const body = { symbol, side: 'sell', type: 'limit', quantity: amount, price: tpPrice };
+  const headers = {
+    'API-KEY': process.env.EXCHANGE_API_KEY,
+    'API-SIGN': signRequest(body, process.env.EXCHANGE_API_SECRET),
+    'Content-Type': 'application/json'
+  };
+  const resp = await axios.post(url, body, { headers });
+  return resp.data;
+}
+
+// ----- Unified Interface -----
 async function getAccountBalance() {
+  if (config.mode === 'live') {
+    // implement live balance fetch if available
+    throw new Error('Live balance fetch not implemented');
+  }
   return simulationState.balance;
 }
 
-/**
- * Market buy token via simulated swap
- */
 async function buyMarket(mintAddress, amountUsdc) {
-  // Make sure we don't exceed available balance
-  const availableAmount = Math.min(amountUsdc, simulationState.balance);
-  
-  if (availableAmount < 1) {
-    throw new Error(`Insufficient balance: $${simulationState.balance.toFixed(2)}`);
-  }
-  
-  // Add token to prices if not exists
-  if (!simulationState.prices[mintAddress]) {
-    simulationState.prices[mintAddress] = 0.00001 + (Math.random() * 0.0001);
-  }
-  
-  // Simulate price slippage on trade
-  const basePrice = simulationState.prices[mintAddress];
-  const slippage = 1 + (config.DEFAULT_SLIPPAGE / 100) * (0.5 + Math.random() * 0.5);
-  const executionPrice = basePrice * slippage;
-  
-  // Calculate tokens received
-  const tokensReceived = availableAmount / executionPrice;
-  
-  // Update simulation state
-  simulationState.balance -= availableAmount;
-  
-  // Create or update position
-  if (simulationState.positions[mintAddress]) {
-    // Average down/up existing position
-    const position = simulationState.positions[mintAddress];
-    const totalTokens = position.amount + tokensReceived;
-    const totalCost = (position.amount * position.entryPrice) + availableAmount;
-    position.entryPrice = totalCost / totalTokens;
-    position.amount = totalTokens;
-  } else {
-    // Create new position
-    simulationState.positions[mintAddress] = {
-      entryPrice: executionPrice,
-      amount: tokensReceived,
-      timestamp: Date.now()
-    };
-  }
-  
-  // Save updated state
-  saveState();
-  
-  console.log(`[DRY RUN] Bought ${tokensReceived.toFixed(2)} tokens at $${executionPrice.toFixed(8)}`);
-  
-  return { 
-    id: `dry-${Date.now()}`, 
-    filledPrice: executionPrice, 
-    outputAmount: tokensReceived 
-  };
+  if (config.mode === 'live') return placeLiveMarketOrder(mintAddress, amountUsdc);
+  return module.exports._buySimulation(mintAddress, amountUsdc);
 }
 
-/**
- * Place a stop-loss order
- */
 async function placeStopLoss(mintAddress, amount, stopPrice) {
-  const position = simulationState.positions[mintAddress];
-  if (!position) {
-    throw new Error(`No position found for ${mintAddress}`);
-  }
-  
-  // Create stop loss order
-  const order = {
-    id: `sl-${Date.now()}`,
-    token: mintAddress,
-    type: 'stop',
-    price: stopPrice,
-    amount: position.amount,
-    timestamp: Date.now()
-  };
-  
-  // Remove any existing stop orders for this token
-  simulationState.orders = simulationState.orders.filter(
-    o => !(o.token === mintAddress && o.type === 'stop')
-  );
-  
-  // Add new stop order
-  simulationState.orders.push(order);
-  
-  // Save state
-  saveState();
-  
-  return { id: order.id };
+  if (config.mode === 'live') return placeLiveStopLoss(mintAddress, amount, stopPrice);
+  return module.exports._placeSimulationStop(mintAddress, stopPrice);
 }
 
-/**
- * Place a take-profit limit order
- */
 async function placeTakeProfit(mintAddress, amount, tpPrice) {
-  const position = simulationState.positions[mintAddress];
-  if (!position) {
-    throw new Error(`No position found for ${mintAddress}`);
-  }
-  
-  // Make sure we don't exceed position size
-  const tpAmount = Math.min(amount, position.amount);
-  
-  // Create take profit order
-  const order = {
-    id: `tp-${Date.now()}`,
-    token: mintAddress,
-    type: 'limit',
-    price: tpPrice,
-    amount: tpAmount,
-    timestamp: Date.now()
-  };
-  
-  // Add take profit order
-  simulationState.orders.push(order);
-  
-  // Save state
-  saveState();
-  
-  return { id: order.id };
+  if (config.mode === 'live') return placeLiveTakeProfit(mintAddress, amount, tpPrice);
+  return module.exports._placeSimulationTP(mintAddress, amount, tpPrice);
 }
 
-/**
- * Modify an existing order
- */
 async function modifyOrder(orderId, updates) {
-  const orderIndex = simulationState.orders.findIndex(o => o.id === orderId);
-  
-  if (orderIndex === -1) {
-    throw new Error(`Order ${orderId} not found`);
+  if (config.mode === 'live') {
+    // implement live modify
+    throw new Error('Live modify order not implemented');
   }
-  
-  // Update order
-  simulationState.orders[orderIndex] = {
-    ...simulationState.orders[orderIndex],
-    ...updates,
-    lastUpdated: Date.now()
-  };
-  
-  // Save state
+  const idx = simulationState.orders.findIndex(o => o.id === orderId);
+  if (idx < 0) throw new Error(`Order ${orderId} not found`);
+  simulationState.orders[idx] = { ...simulationState.orders[idx], ...updates, lastUpdated: Date.now() };
   saveState();
-  
   return { id: orderId };
 }
 
-/**
- * Cancel order by ID
- */
 async function cancelOrder(orderId) {
-  const initialLength = simulationState.orders.length;
-  simulationState.orders = simulationState.orders.filter(o => o.id !== orderId);
-  
-  // Save state if something was removed
-  if (initialLength !== simulationState.orders.length) {
-    saveState();
-    return true;
+  if (config.mode === 'live') {
+    // implement live cancel
+    throw new Error('Live cancel not implemented');
   }
-  
+  const len = simulationState.orders.length;
+  simulationState.orders = simulationState.orders.filter(o => o.id !== orderId);
+  if (simulationState.orders.length < len) { saveState(); return true; }
   return false;
 }
 
-/**
- * Get current price for token 
- */
 async function getCurrentPrice(mintAddress) {
+  if (config.mode === 'live') {
+    // implement live price fetch
+    throw new Error('Live price fetch not implemented');
+  }
   return simulationState.prices[mintAddress] || 0;
 }
 
-/**
- * Get token balance (position size)
- */
 async function getPosition(mintAddress) {
-  const position = simulationState.positions[mintAddress];
-  return { 
-    size: position ? position.amount : 0 
-  };
+  if (config.mode === 'live') {
+    // implement live position fetch
+    throw new Error('Live position fetch not implemented');
+  }
+  const p = simulationState.positions[mintAddress];
+  return { size: p ? p.amount : 0 };
 }
 
-/**
- * Close position
- */
 async function closePosition(mintAddress) {
-  const position = simulationState.positions[mintAddress];
-  
-  if (!position) {
-    return { success: false, error: 'No position found' };
+  if (config.mode === 'live') {
+    // implement live close
+    throw new Error('Live close not implemented');
   }
-  
-  // Get current price
-  const currentPrice = simulationState.prices[mintAddress];
-  
-  if (!currentPrice) {
-    return { success: false, error: 'No price available' };
-  }
-  
-  // Calculate profit/loss
-  const profit = (currentPrice - position.entryPrice) * position.amount;
-  
-  // Add proceeds back to balance
-  simulationState.balance += position.amount * currentPrice;
-  
-  // Remove all orders for this token
-  simulationState.orders = simulationState.orders.filter(o => o.token !== mintAddress);
-  
-  // Remove position
+  const pos = simulationState.positions[mintAddress];
+  if (!pos) return { success: false, error: 'No position' };
+  const price = simulationState.prices[mintAddress];
+  if (!price) return { success: false, error: 'No price' };
+  const pnl = (price - pos.entryPrice) * pos.amount;
+  simulationState.balance += pos.amount * price;
   delete simulationState.positions[mintAddress];
-  
-  // Save state
+  simulationState.orders = simulationState.orders.filter(o => o.token !== mintAddress);
   saveState();
-  
-  return { 
-    success: true, 
-    profit,
-    exitPrice: currentPrice
-  };
+  return { success: true, profit: pnl, exitPrice: price };
 }
 
-// Make sure DRY_RUN is enforced
-if (!config.DRY_RUN) {
-  console.warn("⚠️ This implementation only works in DRY_RUN mode. Setting DRY_RUN=true forcefully.");
-  config.DRY_RUN = true;
-}
-
-// Function to get current dry run balance (for trader.js)
-function getDryRunBalance() {
-  return simulationState.balance;
-}
+// Expose simulation internals for unified functions
+const _buySimulation = buyMarket;
+const _placeSimulationStop = placeStopLoss;
+const _placeSimulationTP = placeTakeProfit;
 
 module.exports = {
   getAccountBalance,
@@ -446,6 +226,9 @@ module.exports = {
   getCurrentPrice,
   getPosition,
   closePosition,
-  checkTokenSafety,
-  getDryRunBalance
+
+  // Internals for paper logic
+  _buySimulation,
+  _placeSimulationStop,
+  _placeSimulationTP,
 };

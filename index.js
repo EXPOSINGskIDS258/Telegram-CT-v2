@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// index.js
+// index.js - Enhanced with live trading deployment option
 const readline = require("readline");
 const { startListener, getMessageStats } = require("./listener");
 const { parseMemeCoinMessage, validateParsedSignal } = require("./parser");
@@ -9,6 +9,7 @@ const tradeStore = require("./tradeStore");
 const notifier = require("./notifier");
 const config = require("./config");
 const { displayBanner, displaySmallBanner } = require("./banner");
+const { EnhancedSetup } = require("./enhanced-setup");
 
 // Default Telegram channels for memecoin signals
 const DEFAULT_CHANNELS = ['-1002209371269', '-1002277274250']; // Underdog Calls Private, Degen
@@ -43,8 +44,79 @@ const stats = {
   safetyRejections: 0,
   messagesByChannel: {},
   signalsByChannel: {},
-  tradesByChannel: {}
+  tradesByChannel: {},
+  deploymentMode: null,
+  botStartTime: Date.now()
 };
+
+// Setup detection and enhanced deployment functions
+async function checkAndRunSetup() {
+  // Check if this is first run or needs setup
+  if (!fs.existsSync('.env')) {
+    console.log('\n🔧 No configuration found. Starting enhanced setup...\n');
+    await runEnhancedSetup();
+    return true;
+  }
+  
+  // Check for essential settings
+  const requiredFields = ['API_ID', 'API_HASH', 'TELEGRAM_CHANNEL_IDS'];
+  const missingFields = requiredFields.filter(field => !config[field]);
+  
+  if (missingFields.length > 0) {
+    console.log(`\n⚠️  Configuration incomplete. Missing: ${missingFields.join(', ')}`);
+    console.log('🔧 Starting enhanced setup to fix configuration...\n');
+    await runEnhancedSetup();
+    return true;
+  }
+  
+  // Ask if user wants to reconfigure
+  return new Promise(resolve => {
+    rl.question('\n🚀 CrestX is configured. Run setup again? (y/N): ', (answer) => {
+      if (answer.toLowerCase() === 'y') {
+        runEnhancedSetup().then(() => resolve(true));
+      } else {
+        resolve(false);
+      }
+    });
+  });
+}
+
+async function runEnhancedSetup() {
+  rl.close(); // Close current interface
+  
+  const setup = new EnhancedSetup();
+  await setup.start();
+  
+  console.log('\n🔄 Setup complete! Restart CrestX to begin trading.');
+  process.exit(0);
+}
+
+function displayDeploymentStatus() {
+  const mode = config.DRY_RUN ? 'paper' : 'live';
+  stats.deploymentMode = mode;
+  const modeDisplay = mode === 'live' ? '💰 LIVE TRADING' : '🧪 PAPER TRADING';
+  const modeColor = mode === 'live' ? '\x1b[32m' : '\x1b[33m';
+  
+  console.log('\n╔══════════════════════════════════════════════════════════════╗');
+  console.log('║                    DEPLOYMENT STATUS                        ║');
+  console.log('╚══════════════════════════════════════════════════════════════╝');
+  console.log(`\n📊 Current Mode: ${modeColor}${modeDisplay}\x1b[0m`);
+  
+  if (mode === 'live') {
+    console.log('🔗 Network: Solana Mainnet');
+    console.log('⚡ DEX: Jupiter Aggregator');
+    console.log('💳 Wallet: Connected');
+    console.log('🛡️  Safety: Multi-layer protection');
+    console.log('\n⚠️  LIVE TRADING ACTIVE - Real funds at risk!');
+  } else {
+    console.log('💵 Virtual Balance: $' + (config.DRY_RUN_BALANCE || 1000));
+    console.log('📊 Price Simulation: Enabled');
+    console.log('🔒 Risk Level: Zero (No real funds)');
+    console.log('\n✅ Safe testing environment - No real money at risk');
+  }
+  
+  console.log('\n📡 Monitoring channels for trading signals...\n');
+}
 
 // Start the bot
 async function startBot() {
@@ -182,7 +254,8 @@ async function processMessage(message, chatId, metadata = {}) {
     
     // Execute the trade
     try {
-      console.log(`🔄 [${channelDisplay}] ${config.DRY_RUN ? '[DRY RUN] ' : ''}Executing trade for ${signal.contractAddress}...`);
+      const modeLabel = config.DRY_RUN ? '[DRY RUN] ' : '';
+      console.log(`🔄 [${channelDisplay}] ${modeLabel}Executing trade for ${signal.contractAddress}...`);
       const result = await executeTrade(signal, { channelId: chatId, channelInfo });
       
       if (result.success) {
@@ -194,7 +267,7 @@ async function processMessage(message, chatId, metadata = {}) {
         }
         stats.tradesByChannel[chatId]++;
         
-        console.log(`✅ [${channelDisplay}] ${config.DRY_RUN ? '[DRY RUN] ' : ''}Trade executed successfully at ${result.entryPrice}`);
+        console.log(`✅ [${channelDisplay}] ${modeLabel}Trade executed successfully at ${result.entryPrice}`);
         
         // Store trade with enhanced metadata
         const tradeRecord = {
@@ -219,7 +292,7 @@ async function processMessage(message, chatId, metadata = {}) {
         notifier.notifyTradeExecution(tradeRecord);
       } else {
         stats.tradesFailed++;
-        console.error(`❌ [${channelDisplay}] ${config.DRY_RUN ? '[DRY RUN] ' : ''}Trade failed: ${result.error}`);
+        console.error(`❌ [${channelDisplay}] ${modeLabel}Trade failed: ${result.error}`);
       }
     } catch (err) {
       stats.tradesFailed++;
@@ -292,23 +365,36 @@ Available commands:
   safety        - Check token safety (usage: safety <address>)
   balance       - Check wallet balance
   listener      - Show listener statistics
-  ${config.DRY_RUN ? '[DRY RUN MODE ACTIVE - No real trades will be executed]' : ''}
+  setup         - Run enhanced setup wizard
+  mode          - Show current deployment mode
+  ${config.DRY_RUN ? '[DRY RUN MODE ACTIVE - No real trades will be executed]' : '[LIVE TRADING MODE - Real funds at risk]'}
   exit          - Exit the bot
   help          - Show this help message
         `);
         break;
         
+      case 'mode':
+        console.log(displaySmallBanner(config));
+        displayDeploymentStatus();
+        break;
+        
+      case 'setup':
+        console.log('\n🔧 Starting enhanced setup wizard...');
+        await runEnhancedSetup();
+        break;
+        
       case 'stats':
         console.log(displaySmallBanner(config));
         const tradeStats = tradeStore.getTradeStats();
+        const uptime = ((Date.now() - stats.botStartTime) / (1000 * 60 * 60)).toFixed(1);
         console.log(`
-📊 Bot Statistics:
+📊 Bot Statistics (${uptime}h uptime):
+  Mode:               ${stats.deploymentMode === 'live' ? '💰 LIVE TRADING' : '🧪 PAPER TRADING'}
   Messages processed: ${stats.messagesReceived}
   Signals detected:   ${stats.signalsDetected}
   Trades executed:    ${stats.tradesExecuted}
   Failed trades:      ${stats.tradesFailed}
   Safety rejections:  ${stats.safetyRejections}
-  ${config.DRY_RUN ? '  [Running in DRY RUN mode - no real trades]' : ''}
   
 📈 Trade Performance:
   Total trades:       ${tradeStats.totalTrades}
@@ -498,8 +584,27 @@ Available commands:
   });
 }
 
-// Start the bot
-startBot()
+// Main entry point with enhanced setup integration
+async function main() {
+  try {
+    // Check if setup is needed
+    const setupRan = await checkAndRunSetup();
+    if (setupRan) return; // Exit if setup was run
+    
+    // Display deployment status
+    displayDeploymentStatus();
+    
+    // Start the bot
+    await startBot();
+    
+  } catch (error) {
+    console.error('❌ Failed to start CrestX:', error.message);
+    process.exit(1);
+  }
+}
+
+// Start the bot with enhanced setup integration
+main()
   .then(() => {
     setupCliCommands();
   })
