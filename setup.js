@@ -8,6 +8,9 @@ const rl = readline.createInterface({
   output: process.stdout
 });
 
+// Default Telegram channels for memecoin signals
+const DEFAULT_CHANNELS = ['-1002209371269', '-1002277274250']; // Underdog Calls Private, Degen
+
 // Default config values
 const defaultConfig = {
   API_ID: '',
@@ -83,7 +86,29 @@ async function setup() {
   
   config.API_ID = await askQuestion(`Enter Telegram API ID [${config.API_ID || 'not set'}]: `, config.API_ID);
   config.API_HASH = await askQuestion(`Enter Telegram API Hash [${config.API_HASH ? '******' : 'not set'}]: `, config.API_HASH);
-  config.TELEGRAM_CHANNEL_IDS = await askQuestion(`Enter Telegram Channel IDs (comma-separated) [${config.TELEGRAM_CHANNEL_IDS || 'not set'}]: `, config.TELEGRAM_CHANNEL_IDS);
+  
+  // Enhanced channel selection with premium options
+  const useDefaultChannels = await askYesNo('Use premium trading signal channels (Underdog Calls, Degen)', true);
+  
+  if (useDefaultChannels) {
+    config.TELEGRAM_CHANNEL_IDS = DEFAULT_CHANNELS.join(',');
+    console.log(`\x1b[32m✓ Using premium channels: Underdog Calls Private (-1002209371269), Degen (-1002277274250)\x1b[0m`);
+    
+    const addCustomChannels = await askYesNo('Add additional custom channels', false);
+    if (addCustomChannels) {
+      const customChannels = await askQuestion('Enter additional channel IDs (comma-separated): ');
+      if (customChannels.trim()) {
+        // Combine default and custom channels, removing duplicates
+        const allChannels = [...DEFAULT_CHANNELS, ...customChannels.split(',').map(c => c.trim())];
+        const uniqueChannels = [...new Set(allChannels)];
+        config.TELEGRAM_CHANNEL_IDS = uniqueChannels.join(',');
+        console.log(`\x1b[32m✓ Using ${uniqueChannels.length} channels in total\x1b[0m`);
+      }
+    }
+  } else {
+    // User chose not to use defaults, ask for custom channels
+    config.TELEGRAM_CHANNEL_IDS = await askQuestion(`Enter Telegram Channel IDs (comma-separated) [${config.TELEGRAM_CHANNEL_IDS || 'not set'}]: `, config.TELEGRAM_CHANNEL_IDS);
+  }
   
   // Trading parameters
   console.log('\n\x1b[1m\x1b[37m=== Trading Parameters ===\x1b[0m');

@@ -1,6 +1,9 @@
-// src/config.js
+// src/config.js - Enhanced with better Telegram channel handling
 // Load environment variables
 require('dotenv').config();
+
+// Default Telegram channels for memecoin signals
+const DEFAULT_CHANNELS = ['-1002209371269', '-1002277274250']; // Underdog Calls Private, Degen
 
 module.exports = {
   // Telegram MTProto settings
@@ -9,7 +12,7 @@ module.exports = {
   SESSION_NAME: process.env.SESSION_NAME,
   TELEGRAM_CHANNEL_IDS: process.env.TELEGRAM_CHANNEL_IDS
     ? process.env.TELEGRAM_CHANNEL_IDS.split(',').map(id => id.trim())
-    : [],
+    : DEFAULT_CHANNELS, // Use default channels if none specified
     
   // Trade settings
   USE_TRAILING_STOP: process.env.USE_TRAILING_STOP === 'true',
@@ -53,4 +56,151 @@ module.exports = {
   DRY_RUN: process.env.DRY_RUN === 'true', // If true, simulate trades instead of executing them
   DRY_RUN_PRICE_VOLATILITY: parseFloat(process.env.DRY_RUN_PRICE_VOLATILITY) || 5, // % volatility for simulated prices
   DRY_RUN_BALANCE: parseFloat(process.env.DRY_RUN_BALANCE) || 1000, // Starting balance in USDC for paper trading
+  
+  // Helper methods for channel management
+  /**
+   * Save channels to .env file
+   * @param {Array} channels - Array of channel IDs
+   * @returns {boolean} - Success status
+   */
+  saveChannels: function(channels) {
+    if (!Array.isArray(channels)) {
+      console.error("Channels must be an array");
+      return false;
+    }
+    
+    try {
+      const fs = require('fs');
+      const dotenv = fs.readFileSync('.env', 'utf8');
+      
+      // Check if TELEGRAM_CHANNEL_IDS exists in .env
+      if (dotenv.includes('TELEGRAM_CHANNEL_IDS=')) {
+        // Replace existing value
+        const updatedDotenv = dotenv.replace(
+          /TELEGRAM_CHANNEL_IDS=.*/,
+          `TELEGRAM_CHANNEL_IDS=${channels.join(',')}`
+        );
+        fs.writeFileSync('.env', updatedDotenv);
+      } else {
+        // Add new entry at the end of the file
+        const updatedDotenv = dotenv.trim() + `\nTELEGRAM_CHANNEL_IDS=${channels.join(',')}\n`;
+        fs.writeFileSync('.env', updatedDotenv);
+      }
+      
+      // Update the runtime config
+      this.TELEGRAM_CHANNEL_IDS = channels;
+      
+      return true;
+    } catch (error) {
+      console.error(`Error saving channels to .env: ${error.message}`);
+      return false;
+    }
+  },
+  
+  /**
+   * Add a channel to the monitoring list
+   * @param {string} channelId - Channel ID to add
+   * @returns {boolean} - Success status
+   */
+  addChannel: function(channelId) {
+    // Validate channel ID format
+    if (!channelId || (typeof channelId !== 'string' && typeof channelId !== 'number')) {
+      console.error("Invalid channel ID");
+      return false;
+    }
+    
+    // Convert to string
+    channelId = String(channelId).trim();
+    
+    // Check if already exists
+    if (this.TELEGRAM_CHANNEL_IDS.includes(channelId)) {
+      console.warn(`Channel ${channelId} is already being monitored`);
+      return true; // Not an error, just a no-op
+    }
+    
+    // Add to the list
+    const newChannels = [...this.TELEGRAM_CHANNEL_IDS, channelId];
+    
+    // Save to .env
+    return this.saveChannels(newChannels);
+  },
+  
+  /**
+   * Remove a channel from the monitoring list
+   * @param {string} channelId - Channel ID to remove
+   * @returns {boolean} - Success status
+   */
+  removeChannel: function(channelId) {
+    // Validate channel ID format
+    if (!channelId || (typeof channelId !== 'string' && typeof channelId !== 'number')) {
+      console.error("Invalid channel ID");
+      return false;
+    }
+    
+    // Convert to string
+    channelId = String(channelId).trim();
+    
+    // Check if exists
+    if (!this.TELEGRAM_CHANNEL_IDS.includes(channelId)) {
+      console.warn(`Channel ${channelId} is not in the monitoring list`);
+      return true; // Not an error, just a no-op
+    }
+    
+    // Remove from the list
+    const newChannels = this.TELEGRAM_CHANNEL_IDS.filter(id => id !== channelId);
+    
+    // Save to .env
+    return this.saveChannels(newChannels);
+  },
+  
+  /**
+   * Set specific channels for monitoring (replaces all existing channels)
+   * @param {Array} channels - Array of channel IDs
+   * @returns {boolean} - Success status
+   */
+  setChannels: function(channels) {
+    if (!Array.isArray(channels)) {
+      console.error("Channels must be an array");
+      return false;
+    }
+    
+    // Save the new channels
+    return this.saveChannels(channels);
+  },
+  
+  /**
+   * Use premium channels preset
+   * @returns {boolean} - Success status
+   */
+  usePremiumChannels: function() {
+    return this.setChannels(DEFAULT_CHANNELS);
+  },
+  
+  /**
+   * Validate a Telegram channel ID
+   * @param {string} channelId - Channel ID to validate
+   * @returns {boolean} - Is valid
+   */
+  isValidChannelId: function(channelId) {
+    if (!channelId || (typeof channelId !== 'string' && typeof channelId !== 'number')) {
+      return false;
+    }
+    
+    // Convert to string
+    channelId = String(channelId).trim();
+    
+    // Telegram channel IDs are usually numeric and often negative (for supergroups)
+    return /^-?\d+$/.test(channelId);
+  },
+  
+  /**
+   * Get channel names (if available)
+   * @returns {Object} - Map of channel IDs to names
+   */
+  getChannelNames: function() {
+    return {
+      '-1002209371269': 'Underdog Calls Private',
+      '-1002277274250': 'Degen'
+    };
+  }
 };

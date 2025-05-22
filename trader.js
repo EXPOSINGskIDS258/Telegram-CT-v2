@@ -4,8 +4,37 @@ const exchange = require("./exchangeClient");
 const fs = require('fs');
 const path = require('path');
 
+// Premium channel configurations for trading logic
+const CHANNEL_CONFIGS = {
+  '-1002209371269': { // Underdog Calls Private
+    name: 'Underdog Calls',
+    icon: '🔥',
+    maxTradePercent: 7,        // Slightly higher for quality signals
+    defaultStopLoss: 15,       // Tighter stop loss
+    riskMultiplier: 1.2,       // Allow slightly higher risk
+    confidenceThreshold: 2,     // Lower confidence requirement
+    trailingStopDistance: 18   // Tighter trailing stop
+  },
+  '-1002277274250': { // Degen
+    name: 'Degen',
+    icon: '💎',
+    maxTradePercent: 4,        // More conservative for high-risk calls
+    defaultStopLoss: 22,       // Wider stop loss for volatility
+    riskMultiplier: 0.8,       // Reduce risk
+    confidenceThreshold: 2,     // Standard confidence requirement
+    trailingStopDistance: 25   // Wider trailing stop
+  }
+};
+
 // Track active trades to prevent duplicates and manage trailing stops
 const activeTrades = new Map();
+
+// Enhanced trade statistics by channel
+const tradeStats = {
+  totalByChannel: {},
+  profitByChannel: {},
+  winRateByChannel: {}
+};
 
 // For dry run, we keep a virtual order book and price simulation
 let dryRunState = null;
@@ -93,6 +122,11 @@ function executeVirtualOrder(order, executionPrice) {
     const profit = (executionPrice - position.entryPrice) * position.amount;
     console.log(`[DRY RUN] Closed position with P/L: $${profit.toFixed(2)}`);
     
+    // Update channel statistics
+    if (position.channelId) {
+      updateChannelStats(position.channelId, profit > 0, profit);
+    }
+    
     // Add profit back to balance
     dryRunState.balance += position.amount * executionPrice;
     
@@ -123,6 +157,11 @@ function executeVirtualOrder(order, executionPrice) {
     
     // If position is now zero, remove it
     if (position.amount <= 0) {
+      // Update channel statistics for full position close
+      if (position.channelId) {
+        updateChannelStats(position.channelId, profit > 0, profit);
+      }
+      
       delete dryRunState.positions[order.token];
       
       // Remove all orders for this token
@@ -139,39 +178,82 @@ function executeVirtualOrder(order, executionPrice) {
 }
 
 /**
- * Executes a trade based on parsed signals
+ * Update channel-specific trading statistics
  */
-async function executeTrade(signal) {
+function updateChannelStats(channelId, isWin, profit) {
+  if (!tradeStats.totalByChannel[channelId]) {
+    tradeStats.totalByChannel[channelId] = 0;
+    tradeStats.profitByChannel[channelId] = 0;
+    tradeStats.winRateByChannel[channelId] = { wins: 0, total: 0 };
+  }
+  
+  tradeStats.totalByChannel[channelId]++;
+  tradeStats.profitByChannel[channelId] += profit;
+  tradeStats.winRateByChannel[channelId].total++;
+  
+  if (isWin) {
+    tradeStats.winRateByChannel[channelId].wins++;
+  }
+}
+
+/**
+ * Get channel-specific trading configuration
+ */
+function getChannelConfig(channelId) {
+  return CHANNEL_CONFIGS[channelId] || {
+    name: 'Custom Channel',
+    icon: '📱',
+    maxTradePercent: config.MAX_TRADE_PERCENT,
+    defaultStopLoss: 20,
+    riskMultiplier: 1.0,
+    confidenceThreshold: 3,
+    trailingStopDistance: config.TRAILING_STOP_PERCENT
+  };
+}
+
+/**
+ * Executes a trade based on parsed signals with channel-aware logic
+ */
+async function executeTrade(signal, metadata = {}) {
   const { contractAddress, tradePercent, stopLossPercent, takeProfitTargets } = signal;
+  const { channelId, channelInfo } = metadata;
+  
+  // Get channel-specific configuration
+  const channelConfig = getChannelConfig(channelId);
+  const channelDisplay = channelInfo ? `${channelInfo.icon} ${channelInfo.name}` : `📱 ${channelConfig.name}`;
   
   // Validation
   if (!contractAddress || !tradePercent) {
-    console.error("⚠️ Missing contract address or trade percentage, skipping trade.");
+    console.error(`⚠️ [${channelDisplay}] Missing contract address or trade percentage, skipping trade.`);
     return { success: false, error: "Missing required parameters" };
   }
   
   // Prevent duplicate trades
   if (activeTrades.has(contractAddress)) {
-    console.log(`⚠️ Already trading ${contractAddress}, skipping duplicate.`);
+    console.log(`⚠️ [${channelDisplay}] Already trading ${contractAddress}, skipping duplicate.`);
     return { success: false, error: "Already trading this token" };
   }
   
-  console.log(`🔔 Executing trade for ${contractAddress}`);
+  console.log(`🔔 [${channelDisplay}] Executing trade for ${contractAddress}`);
   
   try {
-    // 1. Calculate trade amount
+    // 1. Calculate trade amount with channel-specific limits
     let balance = 0;
     
     if (config.DRY_RUN) {
       // In dry run, use the virtual balance
       balance = dryRunState.balance; 
-      console.log(`[DRY RUN] Using paper trading balance of $${balance.toFixed(2)}`);
+      console.log(`[DRY RUN] [${channelDisplay}] Using paper trading balance of $${balance.toFixed(2)}`);
     } else {
       balance = await exchange.getAccountBalance();
     }
     
-    const amount = balance * (Math.min(tradePercent, config.MAX_TRADE_PERCENT) / 100);
-    console.log(`💸 ${config.DRY_RUN ? '[DRY RUN]' : ''} Buying amount: ${amount.toFixed(2)} USDC (${tradePercent}% of account)`);
+    // Apply channel-specific max trade percentage
+    const maxTradePercent = Math.min(channelConfig.maxTradePercent, config.MAX_TRADE_PERCENT);
+    const adjustedTradePercent = Math.min(tradePercent * channelConfig.riskMultiplier, maxTradePercent);
+    const amount = balance * (adjustedTradePercent / 100);
+    
+    console.log(`💸 [${channelDisplay}] ${config.DRY_RUN ? '[DRY RUN]' : ''} Buying amount: ${amount.toFixed(2)} USDC (${adjustedTradePercent.toFixed(1)}% of account, channel limit: ${maxTradePercent}%)`);
     
     // 2. Place market buy
     let buyOrder;
@@ -186,16 +268,18 @@ async function executeTrade(signal) {
       
       buyPrice = dryRunState.prices[contractAddress];
       const tokenAmount = amount / buyPrice;
-      console.log(`[DRY RUN] Would buy ${tokenAmount.toFixed(2)} tokens at $${buyPrice.toFixed(8)}`);
+      console.log(`[DRY RUN] [${channelDisplay}] Would buy ${tokenAmount.toFixed(2)} tokens at $${buyPrice.toFixed(8)}`);
       
       // Deduct from balance
       dryRunState.balance -= amount;
       
-      // Create virtual position
+      // Create virtual position with channel metadata
       dryRunState.positions[contractAddress] = {
         entryPrice: buyPrice,
         amount: tokenAmount,
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        channelId: channelId,
+        channelName: channelConfig.name
       };
       
       buyOrder = { id: `dry-${Date.now()}`, filledPrice: buyPrice };
@@ -205,12 +289,13 @@ async function executeTrade(signal) {
       buyPrice = buyOrder.filledPrice;
     }
     
-    console.log(`✅ ${config.DRY_RUN ? '[DRY RUN]' : ''} Bought at price: ${buyPrice}`);
+    console.log(`✅ [${channelDisplay}] ${config.DRY_RUN ? '[DRY RUN]' : ''} Bought at price: ${buyPrice}`);
     
-    // 3. Place initial stop loss
-    const initialStop = buyPrice * (1 - stopLossPercent / 100);
+    // 3. Place initial stop loss with channel-specific settings
+    const channelStopLoss = stopLossPercent || channelConfig.defaultStopLoss;
+    const initialStop = buyPrice * (1 - channelStopLoss / 100);
     let currentStop = initialStop;
-    console.log(`🛑 ${config.DRY_RUN ? '[DRY RUN]' : ''} STOP LOSS → placing at: ${initialStop}`);
+    console.log(`🛑 [${channelDisplay}] ${config.DRY_RUN ? '[DRY RUN]' : ''} STOP LOSS → placing at: ${initialStop.toFixed(8)} (${channelStopLoss}%)`);
     
     let slOrder;
     if (config.DRY_RUN) {
@@ -239,7 +324,7 @@ async function executeTrade(signal) {
           ? dryRunState.positions[contractAddress].amount * portionPerTP
           : amount * portionPerTP;
           
-        console.log(`🎯 ${config.DRY_RUN ? '[DRY RUN]' : ''} TAKE PROFIT → placing at: ${tpPrice} for ${tpAmount}`);
+        console.log(`🎯 [${channelDisplay}] ${config.DRY_RUN ? '[DRY RUN]' : ''} TAKE PROFIT → placing at: ${tpPrice.toFixed(8)} for ${tpAmount.toFixed(2)} (${tpPercent}%)`);
         
         let tpOrder;
         if (config.DRY_RUN) {
@@ -258,13 +343,15 @@ async function executeTrade(signal) {
         
         tpOrders.push(tpOrder);
       }
+    } else {
+      console.log(`💡 [${channelDisplay}] No take profit targets specified - consider manual profit taking`);
     }
     
-    // 5. Trailing stop logic
+    // 5. Channel-specific trailing stop logic
     let trailingInterval = null;
     if (config.USE_TRAILING_STOP) {
-      const trailDist = config.TRAILING_STOP_PERCENT / 100;
-      console.log(`⏱️ ${config.DRY_RUN ? '[DRY RUN]' : ''} Starting trailing stop with distance: ${config.TRAILING_STOP_PERCENT}%`);
+      const trailDist = channelConfig.trailingStopDistance / 100;
+      console.log(`⏱️ [${channelDisplay}] ${config.DRY_RUN ? '[DRY RUN]' : ''} Starting trailing stop with distance: ${channelConfig.trailingStopDistance}%`);
       
       trailingInterval = setInterval(async () => {
         try {
@@ -287,7 +374,7 @@ async function executeTrade(signal) {
             const newStop = currentPrice * (1 - trailDist);
             if (newStop > currentStop) {
               currentStop = newStop;
-              console.log(`⏱️ ${config.DRY_RUN ? '[DRY RUN]' : ''} Updating trailing stop to: ${currentStop}`);
+              console.log(`⏱️ [${channelDisplay}] ${config.DRY_RUN ? '[DRY RUN]' : ''} Updating trailing stop to: ${currentStop.toFixed(8)}`);
               
               if (config.DRY_RUN) {
                 // Update virtual stop order
@@ -307,35 +394,43 @@ async function executeTrade(signal) {
           if (!config.DRY_RUN) {
             const position = await exchange.getPosition(contractAddress);
             if (!position || position.size === 0) {
-              console.log(`🔄 Position closed, cleaning up trailing stop`);
+              console.log(`🔄 [${channelDisplay}] Position closed, cleaning up trailing stop`);
               clearInterval(trailingInterval);
               activeTrades.delete(contractAddress);
             }
           }
         } catch (err) {
-          console.error(`⚠️ Error in trailing loop: ${err.message}`);
+          console.error(`⚠️ [${channelDisplay}] Error in trailing loop: ${err.message}`);
         }
       }, 5000); // Check every 5 seconds
     }
     
-    // Track active trade
+    // Track active trade with enhanced metadata
     activeTrades.set(contractAddress, {
       entryPrice: buyPrice,
       amount: config.DRY_RUN ? dryRunState.positions[contractAddress].amount : amount,
       stopLoss: slOrder,
       takeProfits: tpOrders,
-      trailingInterval
+      trailingInterval,
+      // Enhanced metadata
+      channelId: channelId,
+      channelName: channelConfig.name,
+      channelConfig: channelConfig,
+      tradePercent: adjustedTradePercent,
+      originalSignal: signal
     });
     
     return {
       success: true,
       entryPrice: buyPrice,
       amount: config.DRY_RUN ? dryRunState.positions[contractAddress].amount : amount,
-      id: buyOrder.id
+      id: buyOrder.id,
+      channelId: channelId,
+      channelName: channelConfig.name
     };
     
   } catch (err) {
-    console.error(`❌ Trade execution failed for ${contractAddress}: ${err.message}`);
+    console.error(`❌ [${channelDisplay}] Trade execution failed for ${contractAddress}: ${err.message}`);
     
     // Clean up any active trades on failure
     if (activeTrades.has(contractAddress)) {
@@ -346,7 +441,9 @@ async function executeTrade(signal) {
     
     return {
       success: false,
-      error: err.message
+      error: err.message,
+      channelId: channelId,
+      channelName: channelConfig.name
     };
   }
 }
@@ -362,6 +459,7 @@ async function cancelTrade(contractAddress) {
   
   try {
     const trade = activeTrades.get(contractAddress);
+    const channelDisplay = trade.channelName ? `${trade.channelName}` : 'Unknown Channel';
     
     // Cancel trailing stop interval
     if (trade.trailingInterval) {
@@ -369,7 +467,7 @@ async function cancelTrade(contractAddress) {
     }
     
     if (config.DRY_RUN) {
-      console.log(`[DRY RUN] Cancelling all orders for ${contractAddress}`);
+      console.log(`[DRY RUN] [${channelDisplay}] Cancelling all orders for ${contractAddress}`);
       
       // Add position value back to balance
       if (dryRunState.positions[contractAddress]) {
@@ -395,7 +493,7 @@ async function cancelTrade(contractAddress) {
     }
     
     activeTrades.delete(contractAddress);
-    console.log(`✅ ${config.DRY_RUN ? '[DRY RUN]' : ''} Successfully canceled trade for ${contractAddress}`);
+    console.log(`✅ [${channelDisplay}] ${config.DRY_RUN ? '[DRY RUN]' : ''} Successfully canceled trade for ${contractAddress}`);
     return true;
   } catch (err) {
     console.error(`❌ Error canceling trade for ${contractAddress}: ${err.message}`);
@@ -404,7 +502,7 @@ async function cancelTrade(contractAddress) {
 }
 
 /**
- * Get status of all active trades
+ * Get status of all active trades with enhanced metadata
  */
 async function getActiveTrades() {
   return Array.from(activeTrades.keys()).map(token => {
@@ -422,16 +520,46 @@ async function getActiveTrades() {
         currentPrice,
         amount: position.amount,
         profit,
-        profitPercent: profitPercent.toFixed(2) + '%'
+        profitPercent: profitPercent.toFixed(2) + '%',
+        channelId: trade.channelId,
+        channelName: trade.channelName,
+        tradePercent: trade.tradePercent
       };
     } else {
       return {
         contractAddress: token,
         entryPrice: trade.entryPrice,
-        amount: trade.amount
+        amount: trade.amount,
+        channelId: trade.channelId,
+        channelName: trade.channelName,
+        tradePercent: trade.tradePercent
       };
     }
   });
+}
+
+/**
+ * Get channel-specific trading statistics
+ */
+function getChannelStats() {
+  const stats = {};
+  
+  Object.keys(tradeStats.totalByChannel).forEach(channelId => {
+    const channelConfig = getChannelConfig(channelId);
+    const winRate = tradeStats.winRateByChannel[channelId];
+    
+    stats[channelId] = {
+      name: channelConfig.name,
+      icon: channelConfig.icon,
+      totalTrades: tradeStats.totalByChannel[channelId],
+      totalProfit: tradeStats.profitByChannel[channelId],
+      winRate: winRate.total > 0 ? ((winRate.wins / winRate.total) * 100).toFixed(1) : '0.0',
+      wins: winRate.wins,
+      losses: winRate.total - winRate.wins
+    };
+  });
+  
+  return stats;
 }
 
 /**
@@ -444,4 +572,30 @@ function getDryRunBalance() {
   return dryRunState.balance;
 }
 
-module.exports = { executeTrade, cancelTrade, getActiveTrades, getDryRunBalance };
+/**
+ * Get recommended settings for a channel
+ */
+function getChannelRecommendations(channelId) {
+  const channelConfig = getChannelConfig(channelId);
+  
+  return {
+    channelName: channelConfig.name,
+    recommendations: {
+      maxTradeSize: `${channelConfig.maxTradePercent}%`,
+      stopLoss: `${channelConfig.defaultStopLoss}%`,
+      trailingStop: `${channelConfig.trailingStopDistance}%`,
+      confidenceThreshold: channelConfig.confidenceThreshold,
+      riskLevel: channelConfig.riskMultiplier > 1 ? 'Higher' : channelConfig.riskMultiplier < 1 ? 'Lower' : 'Standard'
+    }
+  };
+}
+
+module.exports = { 
+  executeTrade, 
+  cancelTrade, 
+  getActiveTrades, 
+  getDryRunBalance,
+  getChannelStats,
+  getChannelRecommendations,
+  CHANNEL_CONFIGS
+};

@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 // index.js
 const readline = require("readline");
-const { startListener } = require("./listener");
-const { parseMemeCoinMessage } = require("./parser");
+const { startListener, getMessageStats } = require("./listener");
+const { parseMemeCoinMessage, validateParsedSignal } = require("./parser");
 const { executeTrade, cancelTrade, getActiveTrades, getDryRunBalance } = require("./trader");
 const tokenSafety = require("./tokenSafety");
 const tradeStore = require("./tradeStore");
 const notifier = require("./notifier");
 const config = require("./config");
 const { displayBanner, displaySmallBanner } = require("./banner");
+
+// Default Telegram channels for memecoin signals
+const DEFAULT_CHANNELS = ['-1002209371269', '-1002277274250']; // Underdog Calls Private, Degen
 
 // Create data directory if it doesn't exist
 const fs = require('fs');
@@ -31,13 +34,16 @@ process.on('uncaughtException', (err) => {
   // Keep running despite errors
 });
 
-// Stats tracking
+// Enhanced stats tracking with channel breakdown
 const stats = {
   messagesReceived: 0,
   signalsDetected: 0,
   tradesExecuted: 0,
   tradesFailed: 0,
-  safetyRejections: 0
+  safetyRejections: 0,
+  messagesByChannel: {},
+  signalsByChannel: {},
+  tradesByChannel: {}
 };
 
 // Start the bot
@@ -47,59 +53,126 @@ async function startBot() {
   // Validate configuration
   validateConfig();
   
-  // Start Telegram listener
-  const client = await startListener(async (message, chatId) => {
+  // Start Telegram listener with enhanced callback
+  const client = await startListener(async (message, chatId, metadata = {}) => {
     stats.messagesReceived++;
-    console.log(`\n📝 [${new Date().toLocaleTimeString()}] Message from channel ${chatId}:`);
+    
+    // Update channel-specific stats
+    if (!stats.messagesByChannel[chatId]) {
+      stats.messagesByChannel[chatId] = 0;
+    }
+    stats.messagesByChannel[chatId]++;
+    
+    // Enhanced logging with channel context
+    const channelInfo = metadata.channelInfo;
+    const channelDisplay = channelInfo 
+      ? `${channelInfo.icon} ${channelInfo.name}` 
+      : `📱 Channel ${chatId}`;
+    
+    console.log(`\n📝 [${new Date().toLocaleTimeString()}] Message from ${channelDisplay}:`);
     console.log(`${message.slice(0, 100)}${message.length > 100 ? '...' : ''}`);
+    
+    // Show signal keyword detection result
+    if (metadata.hasSignalKeywords) {
+      console.log(`🎯 Signal keywords detected - processing with priority`);
+    }
     
     // Set the client for notifications
     notifier.setClient(client);
     
-    // Process the message
-    await processMessage(message, chatId);
+    // Process the message with enhanced parameters
+    await processMessage(message, chatId, metadata);
     
     rl.prompt();
   });
 }
 
-// Process incoming message
-async function processMessage(message, chatId) {
+// Enhanced message processing with channel-specific logic
+async function processMessage(message, chatId, metadata = {}) {
   try {
-    // Parse the incoming callout
-    const signal = parseMemeCoinMessage(message, true);
+    const channelInfo = metadata.channelInfo;
+    const channelDisplay = channelInfo 
+      ? `${channelInfo.name}` 
+      : `Channel ${chatId}`;
     
-    // Log the parsing result
+    // Use channel-specific parsing
+    const signal = parseMemeCoinMessage(message, true, chatId);
+    
+    // Update channel-specific signal stats
     if (signal.contractAddress) {
       stats.signalsDetected++;
-      console.log(`🔍 Detected signal for ${signal.contractAddress}`);
+      
+      if (!stats.signalsByChannel[chatId]) {
+        stats.signalsByChannel[chatId] = 0;
+      }
+      stats.signalsByChannel[chatId]++;
+      
+      console.log(`🔍 [${channelDisplay}] Detected ${signal.channelType || 'generic'} signal for ${signal.contractAddress}`);
     }
     
-    // Validate essential fields
-    if (!signal.contractAddress || !signal.tradePercent || !signal.stopLossPercent) {
-      console.log("⚠️ Skipping incomplete signal, missing required fields");
+    // Enhanced validation with channel-specific rules
+    const validation = validateParsedSignal(signal, chatId);
+    
+    // Log validation warnings/suggestions
+    if (validation.warnings.length > 0) {
+      console.log(`⚠️ Validation warnings:`);
+      validation.warnings.forEach(warning => console.log(`   - ${warning}`));
+    }
+    
+    if (validation.suggestions.length > 0) {
+      console.log(`💡 Suggestions:`);
+      validation.suggestions.forEach(suggestion => console.log(`   - ${suggestion}`));
+    }
+    
+    // Validate essential fields (with channel-specific defaults)
+    if (!signal.contractAddress) {
+      console.log(`⚠️ [${channelDisplay}] No contract address found, skipping`);
       return;
     }
     
-    // Optionally enforce full confidence
-    if (signal.confidence < 3) {
-      console.log(`⚠️ Low-confidence signal (${signal.confidence}/3), skipping`);
+    // Apply channel-specific confidence thresholds
+    let requiredConfidence = 2; // Default
+    if (channelInfo) {
+      // Premium channels can have lower confidence requirements
+      requiredConfidence = channelInfo.name.includes('Underdog') ? 2 : 2;
+    }
+    
+    if (signal.confidence < requiredConfidence) {
+      console.log(`⚠️ [${channelDisplay}] Low-confidence signal (${signal.confidence}/${requiredConfidence}), skipping`);
       return;
+    }
+    
+    // Apply defaults for missing fields based on channel
+    if (!signal.stopLossPercent) {
+      if (channelInfo?.name.includes('Underdog')) {
+        signal.stopLossPercent = 15; // Underdog default
+        console.log(`🔧 [${channelDisplay}] Applied Underdog default stop loss: 15%`);
+      } else if (channelInfo?.name.includes('Degen')) {
+        signal.stopLossPercent = 20; // Degen default
+        console.log(`🔧 [${channelDisplay}] Applied Degen default stop loss: 20%`);
+      } else {
+        signal.stopLossPercent = 20; // Generic default
+        console.log(`🔧 [${channelDisplay}] Applied default stop loss: 20%`);
+      }
+    }
+    
+    if (!signal.tradePercent) {
+      console.log(`🔧 [${channelDisplay}] Using default trade percentage: ${signal.tradePercent}%`);
     }
     
     // Safety check if enabled
     if (config.ENABLE_SAFETY_CHECKS) {
-      console.log(`🔒 Performing safety check on ${signal.contractAddress}...`);
+      console.log(`🔒 [${channelDisplay}] Performing safety check on ${signal.contractAddress}...`);
       const safetyResult = await tokenSafety.checkToken(signal.contractAddress);
       
       if (!safetyResult.isSafe) {
         stats.safetyRejections++;
-        console.log(`❌ Token safety check failed: ${safetyResult.warnings.join(', ')}`);
+        console.log(`❌ [${channelDisplay}] Token safety check failed: ${safetyResult.warnings.join(', ')}`);
         notifier.notifySafetyWarning(safetyResult, safetyResult.warnings);
         return;
       }
       
-      console.log(`✅ Token passed safety checks. Liquidity: $${safetyResult.liquidity?.toFixed(2) || 'Unknown'}`);
+      console.log(`✅ [${channelDisplay}] Token passed safety checks. Liquidity: $${safetyResult.liquidity?.toFixed(2) || 'Unknown'}`);
       
       // Enrich signal with token info if available
       if (safetyResult.name) {
@@ -109,14 +182,21 @@ async function processMessage(message, chatId) {
     
     // Execute the trade
     try {
-      console.log(`🔄 ${config.DRY_RUN ? '[DRY RUN] ' : ''}Executing trade for ${signal.contractAddress}...`);
-      const result = await executeTrade(signal);
+      console.log(`🔄 [${channelDisplay}] ${config.DRY_RUN ? '[DRY RUN] ' : ''}Executing trade for ${signal.contractAddress}...`);
+      const result = await executeTrade(signal, { channelId: chatId, channelInfo });
       
       if (result.success) {
         stats.tradesExecuted++;
-        console.log(`✅ ${config.DRY_RUN ? '[DRY RUN] ' : ''}Trade executed successfully at ${result.entryPrice}`);
         
-        // Store trade
+        // Update channel-specific trade stats
+        if (!stats.tradesByChannel[chatId]) {
+          stats.tradesByChannel[chatId] = 0;
+        }
+        stats.tradesByChannel[chatId]++;
+        
+        console.log(`✅ [${channelDisplay}] ${config.DRY_RUN ? '[DRY RUN] ' : ''}Trade executed successfully at ${result.entryPrice}`);
+        
+        // Store trade with enhanced metadata
         const tradeRecord = {
           id: result.id || Date.now().toString(),
           contractAddress: signal.contractAddress,
@@ -127,21 +207,26 @@ async function processMessage(message, chatId) {
           takeProfitTargets: signal.takeProfitTargets,
           timestamp: Date.now(),
           closed: false,
-          isDryRun: config.DRY_RUN
+          isDryRun: config.DRY_RUN,
+          // Enhanced metadata
+          sourceChannel: chatId,
+          channelName: channelInfo?.name || 'Unknown',
+          channelType: signal.channelType || 'generic',
+          signalConfidence: signal.confidence
         };
         
         tradeStore.addTrade(tradeRecord);
         notifier.notifyTradeExecution(tradeRecord);
       } else {
         stats.tradesFailed++;
-        console.error(`❌ ${config.DRY_RUN ? '[DRY RUN] ' : ''}Trade failed: ${result.error}`);
+        console.error(`❌ [${channelDisplay}] ${config.DRY_RUN ? '[DRY RUN] ' : ''}Trade failed: ${result.error}`);
       }
     } catch (err) {
       stats.tradesFailed++;
-      console.error(`❌ ${config.DRY_RUN ? '[DRY RUN] ' : ''}Unexpected error executing trade: ${err.message}`);
+      console.error(`❌ [${channelDisplay}] ${config.DRY_RUN ? '[DRY RUN] ' : ''}Unexpected error executing trade: ${err.message}`);
     }
   } catch (err) {
-    console.error(`❌ Error processing message: ${err.message}`);
+    console.error(`❌ Error processing message from ${chatId}: ${err.message}`);
   }
 }
 
@@ -159,7 +244,19 @@ function validateConfig() {
   }
   
   console.log(`ℹ️ Configuration loaded successfully:`);
-  console.log(`🔄 Channels: ${config.TELEGRAM_CHANNEL_IDS.join(", ")}`);
+  
+  // Enhanced channel display with names
+  const configChannelNames = config.getChannelNames ? config.getChannelNames() : {};
+  if (config.TELEGRAM_CHANNEL_IDS.length > 0) {
+    console.log(`🔄 Monitoring channels:`);
+    config.TELEGRAM_CHANNEL_IDS.forEach(id => {
+      const name = configChannelNames[id] || 'Custom channel';
+      console.log(`   - ${id} (${name})`);
+    });
+  } else {
+    console.warn(`⚠️ No Telegram channels configured. Use 'premium' command to add recommended channels.`);
+  }
+  
   console.log(`💰 Max trade: ${config.MAX_TRADE_PERCENT}%`);
   console.log(`🛑 Stop loss: Trailing ${config.USE_TRAILING_STOP ? "enabled" : "disabled"} (${config.TRAILING_STOP_PERCENT}%)`);
   console.log(`🔒 Safety checks: ${config.ENABLE_SAFETY_CHECKS ? "enabled" : "disabled"}`);
@@ -184,15 +281,20 @@ function setupCliCommands() {
         console.log(displaySmallBanner(config));
         console.log(`
 Available commands:
-  stats     - Show bot statistics
-  trades    - List active trades
-  history   - Show trade history
-  cancel    - Cancel a specific trade (usage: cancel <address>)
-  safety    - Check token safety (usage: safety <address>)
-  balance   - Check wallet balance
+  stats         - Show bot statistics
+  trades        - List active trades
+  history       - Show trade history
+  channels      - List configured Telegram channels
+  premium       - Set up premium trading channels
+  addchannel    - Add a channel (usage: addchannel <id>)
+  removechannel - Remove a channel (usage: removechannel <id>)
+  cancel        - Cancel a specific trade (usage: cancel <address>)
+  safety        - Check token safety (usage: safety <address>)
+  balance       - Check wallet balance
+  listener      - Show listener statistics
   ${config.DRY_RUN ? '[DRY RUN MODE ACTIVE - No real trades will be executed]' : ''}
-  exit      - Exit the bot
-  help      - Show this help message
+  exit          - Exit the bot
+  help          - Show this help message
         `);
         break;
         
@@ -214,7 +316,38 @@ Available commands:
   Closed trades:      ${tradeStats.closedTrades}
   Win rate:           ${tradeStats.winRate.toFixed(1)}%
   Total profit:       $${tradeStats.totalProfit.toFixed(2)}
-        `);
+  
+📋 Channel Breakdown:`);
+        
+        // Show per-channel stats
+        const channelNamesMap = config.getChannelNames ? config.getChannelNames() : {};
+        Object.keys(stats.messagesByChannel).forEach(channelId => {
+          const channelName = channelNamesMap[channelId] || `Channel ${channelId}`;
+          const messages = stats.messagesByChannel[channelId] || 0;
+          const signals = stats.signalsByChannel[channelId] || 0;
+          const trades = stats.tradesByChannel[channelId] || 0;
+          console.log(`  ${channelName}: ${messages} msgs, ${signals} signals, ${trades} trades`);
+        });
+        break;
+        
+      case 'listener':
+        console.log(displaySmallBanner(config));
+        const listenerStats = getMessageStats();
+        const uptimeHours = (listenerStats.uptimeMs / (1000 * 60 * 60)).toFixed(1);
+        console.log(`
+📡 Listener Statistics:
+  Uptime: ${uptimeHours} hours
+  Total messages: ${listenerStats.totalMessages}
+  Messages/hour: ${(listenerStats.totalMessages / parseFloat(uptimeHours)).toFixed(1)}
+  Last message: ${listenerStats.lastMessageTime ? new Date(listenerStats.lastMessageTime).toLocaleTimeString() : 'Never'}
+  
+📋 Per-Channel Activity:`);
+        
+        const listenerChannelNames = config.getChannelNames ? config.getChannelNames() : {};
+        Object.entries(listenerStats.messagesByChannel).forEach(([channelId, count]) => {
+          const channelName = listenerChannelNames[channelId] || `Channel ${channelId}`;
+          console.log(`  ${channelName}: ${count} messages`);
+        });
         break;
         
       case 'trades':
@@ -246,7 +379,8 @@ Available commands:
               (trade.profit > 0 ? `+$${trade.profit.toFixed(2)}` : `-$${Math.abs(trade.profit).toFixed(2)}`) : 
               'Active';
             const dryRunLabel = trade.isDryRun ? ' [DRY RUN]' : '';
-            console.log(`  - ${trade.symbol || trade.contractAddress}${dryRunLabel}: ${status}`);
+            const channelLabel = trade.channelName ? ` (${trade.channelName})` : '';
+            console.log(`  - ${trade.symbol || trade.contractAddress}${channelLabel}${dryRunLabel}: ${status}`);
           });
         }
         break;
@@ -260,6 +394,34 @@ Available commands:
           const { getAccountBalance } = require('./exchangeClient');
           const balance = await getAccountBalance();
           console.log(`💰 Wallet balance: $${balance.toFixed(2)} USDC`);
+        }
+        break;
+        
+      case 'channels':
+        console.log(displaySmallBanner(config));
+        if (config.TELEGRAM_CHANNEL_IDS.length === 0) {
+          console.log("📭 No channels configured");
+        } else {
+          console.log("📋 Monitored channels:");
+          const monitoredChannelNames = config.getChannelNames ? config.getChannelNames() : {};
+          config.TELEGRAM_CHANNEL_IDS.forEach(id => {
+            const name = monitoredChannelNames[id] || 'Custom channel';
+            const messageCount = stats.messagesByChannel[id] || 0;
+            const signalCount = stats.signalsByChannel[id] || 0;
+            console.log(`  - ${id} (${name}) - ${messageCount} msgs, ${signalCount} signals`);
+          });
+        }
+        break;
+
+      case 'premium':
+        console.log(displaySmallBanner(config));
+        console.log("🔄 Setting up premium channels...");
+        if (config.usePremiumChannels()) {
+          console.log("✅ Premium channels configured successfully:");
+          console.log("  - Underdog Calls Private (-1002209371269)");
+          console.log("  - Degen (-1002277274250)");
+        } else {
+          console.log("❌ Failed to configure premium channels");
         }
         break;
         
@@ -292,6 +454,36 @@ Available commands:
             }
           } else {
             console.log("⚠️ Please specify a contract address to check");
+          }
+        }
+        else if (command.startsWith('addchannel ')) {
+          const channelId = command.split(' ')[1];
+          if (channelId) {
+            if (config.isValidChannelId && config.isValidChannelId(channelId)) {
+              console.log(`🔄 Adding channel ${channelId}...`);
+              if (config.addChannel && config.addChannel(channelId)) {
+                console.log("✅ Channel added successfully");
+              } else {
+                console.log("❌ Failed to add channel");
+              }
+            } else {
+              console.log("⚠️ Invalid channel ID format");
+            }
+          } else {
+            console.log("⚠️ Please specify a channel ID to add");
+          }
+        }
+        else if (command.startsWith('removechannel ')) {
+          const channelId = command.split(' ')[1];
+          if (channelId) {
+            console.log(`🔄 Removing channel ${channelId}...`);
+            if (config.removeChannel && config.removeChannel(channelId)) {
+              console.log("✅ Channel removed successfully");
+            } else {
+              console.log("❌ Failed to remove channel");
+            }
+          } else {
+            console.log("⚠️ Please specify a channel ID to remove");
           }
         }
         else if (command) {
