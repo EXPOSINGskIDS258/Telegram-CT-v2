@@ -38,6 +38,8 @@ const tradeStats = {
 
 // For dry run, we keep a virtual order book and price simulation
 let dryRunState = null;
+let paperTradingEngine = null;
+
 if (config.DRY_RUN) {
   const dryRunPath = path.join(__dirname, '..', 'data', 'dry-run-state.json');
   
@@ -46,12 +48,25 @@ if (config.DRY_RUN) {
     try {
       dryRunState = JSON.parse(fs.readFileSync(dryRunPath, 'utf8'));
       console.log("🔄 Loaded dry run state from file");
+      
+      // Initialize paper trading engine with loaded state
+      paperTradingEngine = initializePaperTradingEngine(dryRunState);
     } catch (err) {
       console.error("Error loading dry run state:", err);
       dryRunState = { prices: {}, orders: [], positions: {}, balance: config.DRY_RUN_BALANCE };
+      paperTradingEngine = initializePaperTradingEngine(dryRunState);
     }
   } else {
-    dryRunState = { prices: {}, orders: [], positions: {}, balance: config.DRY_RUN_BALANCE };
+    dryRunState = { 
+      prices: {}, 
+      orders: [], 
+      positions: {}, 
+      balance: config.DRY_RUN_BALANCE,
+      startingBalance: config.DRY_RUN_BALANCE,
+      totalTrades: 0,
+      realizedPnL: 0
+    };
+    paperTradingEngine = initializePaperTradingEngine(dryRunState);
   }
 
   // Save state periodically
@@ -75,6 +90,101 @@ if (config.DRY_RUN) {
       checkDryRunOrders(token);
     }
   }, 10000); // Every 10 seconds
+}
+
+/**
+ * Initialize the paper trading engine with a state object
+ */
+function initializePaperTradingEngine(state) {
+  return {
+    getPortfolioSummary: () => {
+      // Calculate total value of positions plus balance
+      let unrealizedPnL = 0;
+      let totalPositionsValue = 0;
+      
+      for (const [token, position] of Object.entries(state.positions)) {
+        const currentPrice = state.prices[token] || position.entryPrice;
+        const positionValue = position.amount * currentPrice;
+        const positionPnL = (currentPrice - position.entryPrice) * position.amount;
+        
+        totalPositionsValue += positionValue;
+        unrealizedPnL += positionPnL;
+      }
+      
+      const totalValue = state.balance + totalPositionsValue;
+      const totalPnL = unrealizedPnL + (state.realizedPnL || 0);
+      const roi = state.startingBalance ? (totalPnL / state.startingBalance) * 100 : 0;
+      
+      return {
+        balance: state.balance,
+        totalValue: totalValue,
+        unrealizedPnL: unrealizedPnL,
+        realizedPnL: state.realizedPnL || 0,
+        totalPnL: totalPnL,
+        roi: roi,
+        totalTrades: state.totalTrades || 0,
+        startingBalance: state.startingBalance || config.DRY_RUN_BALANCE
+      };
+    },
+    
+    getActivePositions: () => {
+      return Object.entries(state.positions).map(([token, position]) => {
+        const currentPrice = state.prices[token] || position.entryPrice;
+        const profit = (currentPrice - position.entryPrice) * position.amount;
+        const pnlPercent = ((currentPrice / position.entryPrice) - 1) * 100;
+        
+        return {
+          contractAddress: token,
+          symbol: position.symbol || token.substring(0, 8),
+          entryPrice: position.entryPrice,
+          currentPrice: currentPrice,
+          amount: position.amount,
+          value: position.amount * currentPrice,
+          profit: profit,
+          pnlPercent: pnlPercent,
+          timestamp: position.timestamp,
+          channelId: position.channelId,
+          channelName: position.channelName
+        };
+      });
+    }
+  };
+}
+
+/**
+ * Get live paper trading status
+ */
+function getLivePaperTradingStatus() {
+  if (!config.DRY_RUN || !paperTradingEngine) {
+    return null;
+  }
+  
+  const portfolio = paperTradingEngine.getPortfolioSummary();
+  const positions = paperTradingEngine.getActivePositions();
+  
+  return {
+    balance: portfolio.balance,
+    totalValue: portfolio.totalValue,
+    unrealizedPnL: portfolio.unrealizedPnL,
+    realizedPnL: portfolio.realizedPnL,
+    totalPnL: portfolio.totalPnL,
+    roi: portfolio.roi,
+    activePositions: positions.length,
+    totalTrades: portfolio.totalTrades,
+    startingBalance: portfolio.startingBalance,
+    positions: positions.map(pos => ({
+      symbol: pos.symbol || pos.contractAddress,
+      entryPrice: pos.entryPrice,
+      currentPrice: pos.currentPrice,
+      size: pos.amount || pos.size,
+      value: pos.value || (pos.currentPrice * pos.amount),
+      pnl: pos.profit || (pos.currentPrice - pos.entryPrice) * pos.amount,
+      pnlPercent: ((pos.currentPrice / pos.entryPrice - 1) * 100).toFixed(2),
+      timestamp: pos.timestamp,
+      channelId: pos.channelId,
+      channelName: pos.channelName
+    }))
+  };
 }
 
 /**
@@ -130,6 +240,9 @@ function executeVirtualOrder(order, executionPrice) {
     // Add profit back to balance
     dryRunState.balance += position.amount * executionPrice;
     
+    // Update realized P&L
+    dryRunState.realizedPnL = (dryRunState.realizedPnL || 0) + profit;
+    
     // Remove all orders for this token
     dryRunState.orders = dryRunState.orders.filter(o => o.token !== order.token);
     
@@ -151,6 +264,9 @@ function executeVirtualOrder(order, executionPrice) {
     
     // Add proceeds back to balance
     dryRunState.balance += order.amount * executionPrice;
+    
+    // Update realized P&L
+    dryRunState.realizedPnL = (dryRunState.realizedPnL || 0) + profit;
     
     // Reduce position size
     position.amount -= order.amount;
@@ -279,8 +395,12 @@ async function executeTrade(signal, metadata = {}) {
         amount: tokenAmount,
         timestamp: Date.now(),
         channelId: channelId,
-        channelName: channelConfig.name
+        channelName: channelConfig.name,
+        symbol: signal.symbol || contractAddress.substring(0, 8)
       };
+      
+      // Track total trades
+      dryRunState.totalTrades = (dryRunState.totalTrades || 0) + 1;
       
       buyOrder = { id: `dry-${Date.now()}`, filledPrice: buyPrice };
     } else {
@@ -597,5 +717,6 @@ module.exports = {
   getDryRunBalance,
   getChannelStats,
   getChannelRecommendations,
+  getLivePaperTradingStatus,
   CHANNEL_CONFIGS
 };

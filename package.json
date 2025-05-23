@@ -1,16 +1,28 @@
 {
   "name": "crestx",
-  "version": "1.0.0",
-  "description": "CrestX - Professional Solana Memecoin Trading Bot",
+  "version": "1.1.0",
+  "description": "CrestX - Professional Solana Memecoin Trading Bot with Enhanced Menu System",
   "main": "index.js",
   "bin": {
     "crestx": "./index.js"
   },
   "scripts": {
-    "start": "node index.js",
+    "start": "node start.js",
+    "bot": "node index.js",
     "setup": "node setup.js",
+    "quickstart": "node quickstart.js",
+    "menu": "node -e \"const {EnhancedMenu} = require('./enhanced-menu'); const menu = new EnhancedMenu(); menu.showMainMenu();\"",
     "build-exe": "pkg . --targets node18-win-x64 --output dist/crestx.exe",
-    "install-deps": "npm install @solana/web3.js@latest @solana/spl-token@latest"
+    "build-linux": "pkg . --targets node18-linux-x64 --output dist/crestx-linux",
+    "build-mac": "pkg . --targets node18-macos-x64 --output dist/crestx-mac",
+    "build-all": "npm run build-exe && npm run build-linux && npm run build-mac",
+    "install-deps": "npm install @solana/web3.js@latest @solana/spl-token@latest",
+    "test-config": "node -e \"require('./config'); console.log('✅ Configuration loaded successfully');\"",
+    "test-safety": "node -e \"const safety = require('./tokenSafety'); console.log('✅ Safety module loaded');\"",
+    "diagnostics": "node start.js && echo '5' | node start.js",
+    "clean": "rm -rf node_modules package-lock.json && npm install",
+    "update-deps": "npm update && npm audit fix",
+    "dev": "NODE_ENV=development node index.js"
   },
   "dependencies": {
     "@solana/spl-token": "^0.4.13",
@@ -32,11 +44,33 @@
       "session.txt",
       ".env",
       "data/**/*"
+    ],
+    "targets": [
+      "node18-win-x64",
+      "node18-linux-x64",
+      "node18-macos-x64"
     ]
   },
   "engines": {
     "node": ">=18.0.0"
   },
-  "author": "",
-  "license": "MIT"
+  "keywords": [
+    "solana",
+    "memecoin",
+    "trading-bot",
+    "cryptocurrency",
+    "automated-trading",
+    "telegram-bot",
+    "jupiter-dex"
+  ],
+  "author": "CrestX Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/crestx/crestx-trading-bot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/crestx/crestx-trading-bot/issues"
+  },
+  "homepage": "https://github.com/crestx/crestx-trading-bot#readme"
 }

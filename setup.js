@@ -9,7 +9,7 @@ const rl = readline.createInterface({
   output: process.stdout
 });
 
-class InteractiveSetup {
+class EnhancedSetup {
   constructor() {
     this.config = {};
     this.isFirstRun = !fs.existsSync('.env');
@@ -479,10 +479,10 @@ LOG_LEVEL=info
   }
 }
 
-module.exports = { InteractiveSetup };
+module.exports = { EnhancedSetup };
 
 // If run directly, start the setup
 if (require.main === module) {
-  const setup = new InteractiveSetup();
+  const setup = new EnhancedSetup();
   setup.start().catch(console.error);
 }

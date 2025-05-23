@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// index.js - Main entry point with automatic interactive setup
+// index.js - Main entry point with enhanced menu system integration
 const fs = require('fs');
 const path = require('path');
 
@@ -11,7 +11,7 @@ async function checkConfigurationAndStart() {
     console.log('🔧 No configuration found. Starting interactive setup...\n');
     
     // Import and run interactive setup
-    const { InteractiveSetup } = require('./interactive-setup');
+    const { InteractiveSetup } = require('./setup');
     const setup = new InteractiveSetup();
     
     try {
@@ -34,7 +34,7 @@ async function checkConfigurationAndStart() {
   }
 }
 
-// Main bot functionality (your existing code)
+// Main bot functionality with enhanced menu system
 function startMainBot() {
   // Now require all the modules after setup is complete
   const readline = require("readline");
@@ -46,6 +46,7 @@ function startMainBot() {
   const notifier = require("./notifier");
   const config = require("./config");
   const { displayBanner, displaySmallBanner } = require("./banner");
+  const { EnhancedMenu } = require("./enhanced-menu");
 
   // Create data directory if it doesn't exist
   const dataDir = path.join(__dirname, 'data');
@@ -53,12 +54,18 @@ function startMainBot() {
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
-  // Simple CLI interface
+  // Initialize enhanced menu system
+  const enhancedMenu = new EnhancedMenu();
+
+  // Create readline interface with enhanced menu integration
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
     prompt: "crestx> "
   });
+
+  // Initialize the enhanced menu
+  enhancedMenu.initialize(rl);
 
   // Global uncaught exception handler
   process.on('uncaughtException', (err) => {
@@ -106,7 +113,8 @@ function startMainBot() {
     
     const channelCount = config.TELEGRAM_CHANNEL_IDS ? config.TELEGRAM_CHANNEL_IDS.length : 0;
     console.log(`\n📡 Monitoring ${channelCount} channels for trading signals...`);
-    console.log('\n💡 Type "help" for available commands\n');
+    console.log('\n💡 Type "menu" or "help" for available commands');
+    console.log('💡 Use "dashboard" for real-time monitoring\n');
   }
 
   // Start the bot
@@ -149,8 +157,14 @@ function startMainBot() {
       // Process the message with enhanced parameters
       await processMessage(message, chatId, metadata);
       
-      rl.prompt();
+      // Don't show prompt here, let the enhanced menu handle it
     });
+    
+    // Show initial menu after successful start
+    setTimeout(() => {
+      enhancedMenu.showMainMenu();
+      rl.prompt();
+    }, 1000);
   }
 
   // Enhanced message processing with channel-specific logic
@@ -239,7 +253,7 @@ function startMainBot() {
           return;
         }
         
-        console.log(`✅ [${channelDisplay}] Token passed safety checks. Liquidity: $${safetyResult.liquidity?.toFixed(2) || 'Unknown'}`);
+        console.log(`✅ [${channelDisplay}] Token passed safety checks. Liquidity: ${safetyResult.liquidity?.toFixed(2) || 'Unknown'}`);
         
         // Enrich signal with token info if available
         if (safetyResult.name) {
@@ -320,141 +334,26 @@ function startMainBot() {
     console.log(`🔒 Safety checks: ${config.ENABLE_SAFETY_CHECKS ? "enabled" : "disabled"}`);
   }
 
-  // Setup CLI commands (your existing CLI code here)
+  // Enhanced CLI with menu system integration
   function setupCliCommands() {
     rl.prompt();
     
     rl.on('line', async (line) => {
       const command = line.trim();
       
-      switch(command) {
-        case 'help':
-          console.log(displaySmallBanner(config));
-          console.log(`
-Available commands:
-  stats         - Show bot statistics
-  trades        - List active trades
-  history       - Show trade history
-  channels      - List configured Telegram channels
-  balance       - Check wallet balance
-  cancel        - Cancel a specific trade (usage: cancel <address>)
-  safety        - Check token safety (usage: safety <address>)
-  setup         - Run configuration setup again
-  mode          - Show current deployment mode
-  ${config.DRY_RUN ? '[DRY RUN MODE ACTIVE - No real trades will be executed]' : '[LIVE TRADING MODE - Real funds at risk]'}
-  exit          - Exit the bot
-  help          - Show this help message
-          `);
-          break;
-          
-        case 'setup':
-          console.log('\n🔧 Starting configuration setup...');
-          const { InteractiveSetup } = require('./interactive-setup');
-          const setup = new InteractiveSetup();
-          rl.close();
-          await setup.start();
-          process.exit(0);
-          break;
-          
-        case 'mode':
-          console.log(displaySmallBanner(config));
-          displayDeploymentStatus();
-          break;
-          
-        case 'stats':
-          console.log(displaySmallBanner(config));
-          const tradeStats = tradeStore.getTradeStats();
-          const uptime = ((Date.now() - stats.botStartTime) / (1000 * 60 * 60)).toFixed(1);
-          console.log(`
-📊 Bot Statistics (${uptime}h uptime):
-  Mode:               ${stats.deploymentMode === 'live' ? '💰 LIVE TRADING' : '🧪 PAPER TRADING'}
-  Messages processed: ${stats.messagesReceived}
-  Signals detected:   ${stats.signalsDetected}
-  Trades executed:    ${stats.tradesExecuted}
-  Failed trades:      ${stats.tradesFailed}
-  Safety rejections:  ${stats.safetyRejections}
-  
-📈 Trade Performance:
-  Total trades:       ${tradeStats.totalTrades}
-  Active trades:      ${tradeStats.activeTrades}
-  Closed trades:      ${tradeStats.closedTrades}
-  Win rate:           ${tradeStats.winRate.toFixed(1)}%
-  Total profit:       $${tradeStats.totalProfit.toFixed(2)}
-          `);
-          break;
-          
-        case 'trades':
-          console.log(displaySmallBanner(config));
-          const activeTrades = await getActiveTrades();
-          if (activeTrades.length === 0) {
-            console.log("📭 No active trades");
-          } else {
-            console.log("📋 Active trades:");
-            for (const trade of activeTrades) {
-              if (config.DRY_RUN && trade.currentPrice) {
-                console.log(`  - ${trade.contractAddress} (Entry: $${trade.entryPrice.toFixed(8)}, Current: $${trade.currentPrice.toFixed(8)}, P/L: ${trade.profitPercent})`);
-              } else {
-                console.log(`  - ${trade.symbol || trade.contractAddress} (Entry: $${trade.entryPrice.toFixed(8)})`);
-              }
-            }
-          }
-          break;
-          
-        case 'balance':
-          console.log(displaySmallBanner(config));
-          if (config.DRY_RUN) {
-            const balance = getDryRunBalance();
-            console.log(`💰 [DRY RUN] Paper trading balance: $${balance.toFixed(2)} USDC`);
-          } else {
-            const { getAccountBalance } = require('./exchangeClient');
-            try {
-              const balance = await getAccountBalance();
-              console.log(`💰 Wallet balance: $${balance.toFixed(2)} USDC`);
-            } catch (error) {
-              console.error(`❌ Error getting balance: ${error.message}`);
-            }
-          }
-          break;
-          
-        case 'exit':
-          console.log("👋 Shutting down...");
-          process.exit(0);
-          break;
-          
-        default:
-          if (command.startsWith('cancel ')) {
-            const address = command.split(' ')[1];
-            if (address) {
-              console.log(`🔄 ${config.DRY_RUN ? '[DRY RUN] ' : ''}Cancelling trade for ${address}...`);
-              const result = await cancelTrade(address);
-              console.log(result ? "✅ Trade cancelled" : "❌ Failed to cancel trade");
-            } else {
-              console.log("⚠️ Please specify a contract address to cancel");
-            }
-          } 
-          else if (command.startsWith('safety ')) {
-            const address = command.split(' ')[1];
-            if (address) {
-              console.log(`🔒 Checking safety for ${address}...`);
-              const safety = await tokenSafety.checkToken(address);
-              if (safety.isSafe) {
-                console.log(`✅ Token appears safe. ${safety.liquidity ? `Liquidity: $${safety.liquidity.toFixed(2)}` : ''}`);
-              } else {
-                console.log(`❌ Safety concerns detected:`);
-                safety.warnings.forEach(w => console.log(`  - ${w}`));
-              }
-            } else {
-              console.log("⚠️ Please specify a contract address to check");
-            }
-          }
-          else if (command) {
-            console.log("❓ Unknown command. Type 'help' for available commands");
-          }
+      // Let the enhanced menu handle all commands
+      const continueRunning = await enhancedMenu.handleCommand(command);
+      
+      if (!continueRunning) {
+        console.log("👋 Shutting down...");
+        enhancedMenu.shutdown();
+        process.exit(0);
       }
       
       rl.prompt();
     }).on('close', () => {
       console.log("👋 Shutting down...");
+      enhancedMenu.shutdown();
       process.exit(0);
     });
   }

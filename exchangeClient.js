@@ -9,13 +9,13 @@ const {
   Keypair,
   Transaction,
   SystemProgram,
-  LAMPORTS_PER_SOL
+  LAMPORTS_PER_SOL,
+  sendAndConfirmTransaction
 } = require('@solana/web3.js');
-const { Jupiter } = require('@jup-ag/core');
 const { TOKEN_PROGRAM_ID } = require('@solana/spl-token');
+const fetch = require('node-fetch');
 
-// Jupiter DEX instance
-let jupiter = null;
+// Jupiter API integration (using v6 API instead of deprecated core package)
 let connection = null;
 let wallet = null;
 
@@ -30,37 +30,38 @@ async function initializeJupiter() {
     
     // Initialize wallet from private key
     if (config.WALLET_PRIVATE_KEY && !config.DRY_RUN) {
-      const privateKeyBytes = Buffer.from(config.WALLET_PRIVATE_KEY, 'hex');
-      wallet = Keypair.fromSecretKey(privateKeyBytes);
-      console.log('✅ Wallet initialized:', wallet.publicKey.toString());
+      try {
+        // Handle different private key formats
+        let privateKeyBytes;
+        if (config.WALLET_PRIVATE_KEY.startsWith('[') && config.WALLET_PRIVATE_KEY.endsWith(']')) {
+          // Array format: [1,2,3,...]
+          privateKeyBytes = new Uint8Array(JSON.parse(config.WALLET_PRIVATE_KEY));
+        } else if (config.WALLET_PRIVATE_KEY.length === 128) {
+          // Hex format
+          privateKeyBytes = Buffer.from(config.WALLET_PRIVATE_KEY, 'hex');
+        } else {
+          // Base58 format
+          const bs58 = require('bs58');
+          privateKeyBytes = bs58.decode(config.WALLET_PRIVATE_KEY);
+        }
+        
+        wallet = Keypair.fromSecretKey(privateKeyBytes);
+        console.log('✅ Wallet initialized:', wallet.publicKey.toString());
+      } catch (err) {
+        console.error('❌ Failed to parse private key:', err.message);
+        throw new Error('Invalid private key format. Use hex, base58, or array format.');
+      }
     }
     
-    // Initialize Jupiter
-    if (wallet && !config.DRY_RUN) {
-      jupiter = await Jupiter.load({
-        connection,
-        cluster: 'mainnet-beta',
-        user: wallet.publicKey,
-        platformFeeAndAccounts: {
-          feeBps: 50, // 0.5% platform fee
-          feeAccounts: new Map() // No fee collection for now
-        }
-      });
-      console.log('✅ Jupiter DEX initialized');
-    }
+    console.log('✅ Exchange client initialized');
   } catch (err) {
-    console.error('❌ Failed to initialize Jupiter:', err);
+    console.error('❌ Failed to initialize exchange client:', err);
     throw err;
   }
 }
 
-// Initialize on module load
-if (!config.DRY_RUN) {
-  initializeJupiter().catch(console.error);
-}
-
 // ----- Paper Trading State Management -----
-const STATE_FILE = path.join(__dirname, '..', 'data', 'simulation-state.json');
+const STATE_FILE = path.join(__dirname, 'data', 'simulation-state.json');
 let simulationState = {
   prices: {},
   positions: {},
@@ -71,7 +72,7 @@ let simulationState = {
 
 function initSimulation() {
   try {
-    const dataDir = path.join(__dirname, '..', 'data');
+    const dataDir = path.dirname(STATE_FILE);
     if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
     if (fs.existsSync(STATE_FILE)) {
@@ -142,33 +143,104 @@ function executeSimulationOrder(order, execPrice) {
 // Initialize simulation if in paper mode
 if (config.DRY_RUN) initSimulation();
 
-// ----- Live Trading Implementation -----
+// ----- Jupiter API Integration -----
+
+/**
+ * Get Jupiter quote for a swap
+ */
+async function getJupiterQuote(inputMint, outputMint, amount, slippageBps = 50) {
+  try {
+    const url = `https://quote-api.jup.ag/v6/quote?` +
+      `inputMint=${inputMint}&` +
+      `outputMint=${outputMint}&` +
+      `amount=${amount}&` +
+      `slippageBps=${slippageBps}`;
+    
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Jupiter quote API error: ${response.status}`);
+    }
+    
+    return await response.json();
+  } catch (err) {
+    console.error('Jupiter quote error:', err);
+    throw err;
+  }
+}
+
+/**
+ * Execute swap via Jupiter
+ */
+async function executeJupiterSwap(quoteResponse) {
+  if (!wallet) throw new Error('Wallet not initialized');
+  
+  try {
+    // Get swap transaction
+    const swapResponse = await fetch('https://quote-api.jup.ag/v6/swap', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        quoteResponse,
+        userPublicKey: wallet.publicKey.toString(),
+        wrapAndUnwrapSol: true,
+        dynamicComputeUnitLimit: true,
+        prioritizationFeeLamports: config.PRIORITY_FEE_LAMPORTS || 10000
+      })
+    });
+
+    if (!swapResponse.ok) {
+      throw new Error(`Jupiter swap API error: ${swapResponse.status}`);
+    }
+
+    const { swapTransaction } = await swapResponse.json();
+    
+    // Deserialize transaction
+    const transactionBuf = Buffer.from(swapTransaction, 'base64');
+    const transaction = Transaction.from(transactionBuf);
+    
+    // Sign and send transaction
+    transaction.sign(wallet);
+    
+    const signature = await connection.sendTransaction(transaction, [wallet], {
+      skipPreflight: false,
+      maxRetries: 3
+    });
+    
+    // Wait for confirmation
+    const confirmation = await connection.confirmTransaction(signature, 'confirmed');
+    
+    if (confirmation.value.err) {
+      throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);
+    }
+    
+    return {
+      signature,
+      success: true
+    };
+  } catch (err) {
+    console.error('Jupiter swap execution error:', err);
+    throw err;
+  }
+}
 
 /**
  * Get real-time price from Jupiter
  */
 async function getLivePrice(mintAddress) {
-  if (!jupiter) throw new Error('Jupiter not initialized');
-  
   try {
-    const inputMint = new PublicKey(config.USDC_MINT_ADDRESS);
-    const outputMint = new PublicKey(mintAddress);
+    const inputMint = config.USDC_MINT_ADDRESS;
+    const outputMint = mintAddress;
     
-    // Get route for 1 USDC worth
-    const routes = await jupiter.computeRoutes({
-      inputMint,
-      outputMint,
-      amount: 1_000_000, // 1 USDC (6 decimals)
-      slippageBps: 50, // 0.5% slippage for price check
-    });
+    // Get quote for 1 USDC worth
+    const quote = await getJupiterQuote(inputMint, outputMint, 1_000_000); // 1 USDC (6 decimals)
     
-    if (routes.routesInfos.length === 0) {
-      throw new Error('No routes found');
+    if (!quote || !quote.outAmount) {
+      throw new Error('No quote available');
     }
     
-    const bestRoute = routes.routesInfos[0];
-    const price = 1_000_000 / bestRoute.outAmount; // Price per token in USDC
-    
+    const price = 1_000_000 / parseInt(quote.outAmount); // Price per token in USDC
     return price;
   } catch (err) {
     console.error('Error fetching price:', err);
@@ -180,65 +252,36 @@ async function getLivePrice(mintAddress) {
  * Execute live market buy through Jupiter
  */
 async function executeLiveBuy(mintAddress, amountUsdc) {
-  if (!jupiter || !wallet) throw new Error('Jupiter or wallet not initialized');
+  if (!wallet) throw new Error('Wallet not initialized');
   
   try {
-    const inputMint = new PublicKey(config.USDC_MINT_ADDRESS);
-    const outputMint = new PublicKey(mintAddress);
+    const inputMint = config.USDC_MINT_ADDRESS;
+    const outputMint = mintAddress;
     const amount = Math.floor(amountUsdc * 1_000_000); // Convert to USDC decimals
     
-    // Compute routes
-    const routes = await jupiter.computeRoutes({
-      inputMint,
-      outputMint,
-      amount,
-      slippageBps: config.DEFAULT_SLIPPAGE * 100, // Convert percentage to bps
-    });
-    
-    if (routes.routesInfos.length === 0) {
-      throw new Error('No routes found for swap');
-    }
-    
-    const bestRoute = routes.routesInfos[0];
-    console.log(`Found route: ${amountUsdc} USDC → ~${bestRoute.outAmount / 1e9} tokens`);
-    
-    // Build transaction
-    const { swapTransaction } = await jupiter.exchange({
-      routeInfo: bestRoute,
-      userPublicKey: wallet.publicKey,
-      feeAccount: undefined
-    });
-    
-    // Add priority fee
-    swapTransaction.instructions.unshift(
-      SystemProgram.transfer({
-        fromPubkey: wallet.publicKey,
-        toPubkey: wallet.publicKey,
-        lamports: config.PRIORITY_FEE_LAMPORTS || 10000
-      })
+    // Get quote
+    const quote = await getJupiterQuote(
+      inputMint, 
+      outputMint, 
+      amount, 
+      config.DEFAULT_SLIPPAGE * 100
     );
     
-    // Sign and send
-    swapTransaction.sign(wallet);
-    const txid = await connection.sendTransaction(swapTransaction, [wallet], {
-      skipPreflight: true,
-      maxRetries: 3
-    });
-    
-    console.log(`Swap transaction sent: ${txid}`);
-    
-    // Wait for confirmation
-    const confirmation = await connection.confirmTransaction(txid, 'confirmed');
-    if (confirmation.value.err) {
-      throw new Error(`Transaction failed: ${confirmation.value.err}`);
+    if (!quote || !quote.outAmount) {
+      throw new Error('No quote available for swap');
     }
     
-    const filledPrice = amount / bestRoute.outAmount;
+    console.log(`Found route: ${amountUsdc} USDC → ~${parseInt(quote.outAmount) / 1e9} tokens`);
+    
+    // Execute swap
+    const result = await executeJupiterSwap(quote);
+    
+    const filledPrice = amount / parseInt(quote.outAmount);
     
     return {
-      id: txid,
+      id: result.signature,
       filledPrice,
-      amountOut: bestRoute.outAmount,
+      amountOut: parseInt(quote.outAmount),
       success: true
     };
   } catch (err) {
@@ -265,18 +308,19 @@ async function checkTokenSafety(mintAddress) {
     let priceImpact = 0;
     
     try {
-      // Test swap of $100 to check liquidity
+      // Test swap of $100 to check liquidity and price impact
       const testAmount = 100_000_000; // 100 USDC
-      const routes = await jupiter.computeRoutes({
-        inputMint: new PublicKey(config.USDC_MINT_ADDRESS),
-        outputMint: mint,
-        amount: testAmount,
-        slippageBps: 1000, // 10% for safety check
-      });
+      const quote = await getJupiterQuote(
+        config.USDC_MINT_ADDRESS,
+        mintAddress,
+        testAmount,
+        1000 // 10% for safety check
+      );
       
-      if (routes.routesInfos.length > 0) {
-        const route = routes.routesInfos[0];
-        priceImpact = route.priceImpactPct;
+      if (quote && quote.outAmount) {
+        // Estimate price impact based on quote vs linear scaling
+        const expectedOut = (testAmount / 1_000_000) * parseInt(quote.outAmount);
+        priceImpact = Math.abs(1 - (parseInt(quote.outAmount) / expectedOut)) * 100;
         
         // Estimate liquidity based on price impact
         if (priceImpact < 1) liquidity = 100000; // Good liquidity
@@ -285,7 +329,7 @@ async function checkTokenSafety(mintAddress) {
         else liquidity = 5000; // Very low
       }
     } catch (err) {
-      console.warn('Could not fetch Jupiter routes for safety check');
+      console.warn('Could not fetch Jupiter quote for safety check');
     }
     
     return {
@@ -309,6 +353,10 @@ async function getAccountBalance() {
   }
   
   try {
+    if (!connection || !wallet) {
+      await initializeJupiter();
+    }
+    
     // Get USDC token account
     const usdcMint = new PublicKey(config.USDC_MINT_ADDRESS);
     const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
@@ -321,7 +369,7 @@ async function getAccountBalance() {
     }
     
     const balance = tokenAccounts.value[0].account.data.parsed.info.tokenAmount.uiAmount;
-    return balance;
+    return balance || 0;
   } catch (err) {
     console.error('Error getting balance:', err);
     throw err;
@@ -356,6 +404,10 @@ async function buyMarket(mintAddress, amountUsdc) {
   }
   
   // Live trading
+  if (!connection || !wallet) {
+    await initializeJupiter();
+  }
+  
   return executeLiveBuy(mintAddress, amountUsdc);
 }
 
@@ -373,8 +425,7 @@ async function placeStopLoss(mintAddress, amount, stopPrice) {
     return order;
   }
   
-  // Live trading - would need a service that monitors price and executes
-  // For now, return a simulated order that the trader.js will monitor
+  // Live trading - return a simulated order that the trader.js will monitor
   return {
     id: `stop-${Date.now()}`,
     token: mintAddress,
@@ -399,7 +450,7 @@ async function placeTakeProfit(mintAddress, amount, tpPrice) {
     return order;
   }
   
-  // Live trading - would need a service that monitors price and executes
+  // Live trading - return a simulated order that the trader.js will monitor
   return {
     id: `tp-${Date.now()}`,
     token: mintAddress,
@@ -460,6 +511,10 @@ async function getPosition(mintAddress) {
   }
   
   try {
+    if (!connection || !wallet) {
+      await initializeJupiter();
+    }
+    
     const mint = new PublicKey(mintAddress);
     const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
       wallet.publicKey,
@@ -471,7 +526,7 @@ async function getPosition(mintAddress) {
     }
     
     const balance = tokenAccounts.value[0].account.data.parsed.info.tokenAmount.uiAmount;
-    return { size: balance };
+    return { size: balance || 0 };
   } catch (err) {
     console.error('Error getting position:', err);
     return { size: 0 };
@@ -502,47 +557,43 @@ async function closePosition(mintAddress) {
       return { success: false, error: 'No position to close' };
     }
     
-    // Swap tokens back to USDC
-    const outputMint = new PublicKey(config.USDC_MINT_ADDRESS);
-    const inputMint = new PublicKey(mintAddress);
-    const amount = Math.floor(position.size * 1e9); // Convert to token decimals
+    // Swap tokens back to USDC using Jupiter
+    const outputMint = config.USDC_MINT_ADDRESS;
+    const inputMint = mintAddress;
     
-    const routes = await jupiter.computeRoutes({
+    // Get amount in smallest unit (assuming 9 decimals for most tokens)
+    const amount = Math.floor(position.size * 1e9);
+    
+    const quote = await getJupiterQuote(
       inputMint,
       outputMint,
       amount,
-      slippageBps: config.EXIT_SLIPPAGE * 100,
-    });
+      config.EXIT_SLIPPAGE * 100
+    );
     
-    if (routes.routesInfos.length === 0) {
-      throw new Error('No routes found for exit');
+    if (!quote || !quote.outAmount) {
+      throw new Error('No quote available for exit');
     }
     
-    const bestRoute = routes.routesInfos[0];
-    const { swapTransaction } = await jupiter.exchange({
-      routeInfo: bestRoute,
-      userPublicKey: wallet.publicKey,
-    });
-    
-    swapTransaction.sign(wallet);
-    const txid = await connection.sendTransaction(swapTransaction, [wallet], {
-      skipPreflight: true,
-      maxRetries: 3
-    });
-    
-    await connection.confirmTransaction(txid, 'confirmed');
-    
-    const exitPrice = bestRoute.outAmount / amount;
+    const result = await executeJupiterSwap(quote);
+    const exitPrice = parseInt(quote.outAmount) / amount;
     
     return { 
       success: true, 
       exitPrice,
-      amountOut: bestRoute.outAmount / 1e6 // USDC amount
+      amountOut: parseInt(quote.outAmount) / 1e6 // USDC amount
     };
   } catch (err) {
     console.error('Error closing position:', err);
     return { success: false, error: err.message };
   }
+}
+
+// Initialize on module load only for live trading
+if (!config.DRY_RUN) {
+  initializeJupiter().catch(err => {
+    console.warn('Failed to initialize Jupiter on load:', err.message);
+  });
 }
 
 module.exports = {

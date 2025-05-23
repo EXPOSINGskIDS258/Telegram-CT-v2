@@ -1,5 +1,6 @@
 const { TelegramClient } = require("telegram");
 const { StringSession } = require("telegram/sessions");
+const { NewMessage } = require("telegram/events");
 const input = require("input");
 const fs = require("fs");
 const path = require("path");
@@ -77,6 +78,7 @@ async function startListener(callback) {
   // Display channel monitoring status
   displayChannelStatus();
 
+  // Add event handler for new messages
   client.addEventHandler(async (update) => {
     try {
       const msg = update.message?.message;
@@ -85,10 +87,10 @@ async function startListener(callback) {
       if (!msg || !chatId) return;
       
       // Convert chatId to string for comparison
-      const chatIdStr = String(chatId);
+      const chatIdStr = String(-Math.abs(chatId)); // Ensure negative for channels
       
       // Check if this channel is in our monitoring list
-      if (!config.TELEGRAM_CHANNEL_IDS.includes(chatIdStr)) {
+      if (!config.TELEGRAM_CHANNEL_IDS.some(id => String(id) === chatIdStr)) {
         return;
       }
 
@@ -121,12 +123,13 @@ async function startListener(callback) {
     } catch (err) {
       console.error(`❌ Error processing message from channel ${chatId}: ${err.message}`);
     }
-  });
+  }, new NewMessage({}));
 
   // Set up periodic stats logging
   startStatsLogger();
 
-  await client.run();
+  // Keep the client running
+  console.log("🔄 Bot is now listening for messages...");
   
   return client;
 }
