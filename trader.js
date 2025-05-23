@@ -9,7 +9,7 @@ const CHANNEL_CONFIGS = {
   '-1002209371269': { // Underdog Calls Private
     name: 'Underdog Calls',
     icon: '🔥',
-    maxTradePercent: 7,        // Slightly higher for quality signals
+    maxTradeAmount: config.TRADE_AMOUNT_USD * 1.2, // Allow 20% more for quality signals
     defaultStopLoss: 15,       // Tighter stop loss
     riskMultiplier: 1.2,       // Allow slightly higher risk
     confidenceThreshold: 2,     // Lower confidence requirement
@@ -18,7 +18,7 @@ const CHANNEL_CONFIGS = {
   '-1002277274250': { // Degen
     name: 'Degen',
     icon: '💎',
-    maxTradePercent: 4,        // More conservative for high-risk calls
+    maxTradeAmount: config.TRADE_AMOUNT_USD * 0.8, // More conservative for high-risk calls
     defaultStopLoss: 22,       // Wider stop loss for volatility
     riskMultiplier: 0.8,       // Reduce risk
     confidenceThreshold: 2,     // Standard confidence requirement
@@ -319,7 +319,7 @@ function getChannelConfig(channelId) {
   return CHANNEL_CONFIGS[channelId] || {
     name: 'Custom Channel',
     icon: '📱',
-    maxTradePercent: config.MAX_TRADE_PERCENT,
+    maxTradeAmount: config.TRADE_AMOUNT_USD,
     defaultStopLoss: 20,
     riskMultiplier: 1.0,
     confidenceThreshold: 3,
@@ -328,7 +328,7 @@ function getChannelConfig(channelId) {
 }
 
 /**
- * Executes a trade based on parsed signals with channel-aware logic
+ * Executes a trade based on parsed signals with channel-aware logic and fixed dollar amounts
  */
 async function executeTrade(signal, metadata = {}) {
   const { contractAddress, tradePercent, stopLossPercent, takeProfitTargets } = signal;
@@ -339,9 +339,9 @@ async function executeTrade(signal, metadata = {}) {
   const channelDisplay = channelInfo ? `${channelInfo.icon} ${channelInfo.name}` : `📱 ${channelConfig.name}`;
   
   // Validation
-  if (!contractAddress || !tradePercent) {
-    console.error(`⚠️ [${channelDisplay}] Missing contract address or trade percentage, skipping trade.`);
-    return { success: false, error: "Missing required parameters" };
+  if (!contractAddress) {
+    console.error(`⚠️ [${channelDisplay}] Missing contract address, skipping trade.`);
+    return { success: false, error: "Missing contract address" };
   }
   
   // Prevent duplicate trades
@@ -353,23 +353,49 @@ async function executeTrade(signal, metadata = {}) {
   console.log(`🔔 [${channelDisplay}] Executing trade for ${contractAddress}`);
   
   try {
-    // 1. Calculate trade amount with channel-specific limits
-    let balance = 0;
+    // 1. Use fixed dollar amount with channel-specific adjustments
+    let amount;
     
-    if (config.DRY_RUN) {
-      // In dry run, use the virtual balance
-      balance = dryRunState.balance; 
-      console.log(`[DRY RUN] [${channelDisplay}] Using paper trading balance of $${balance.toFixed(2)}`);
+    if (config.TRADE_AMOUNT_USD && config.TRADE_AMOUNT_USD > 0) {
+      // Use fixed dollar amount from config with channel adjustments
+      const baseAmount = config.TRADE_AMOUNT_USD;
+      const channelMaxAmount = channelConfig.maxTradeAmount || baseAmount;
+      
+      // Apply channel risk multiplier
+      amount = Math.min(baseAmount * channelConfig.riskMultiplier, channelMaxAmount);
+      
+      console.log(`💸 [${channelDisplay}] ${config.DRY_RUN ? '[DRY RUN]' : ''} Using fixed amount: $${amount.toFixed(2)} (base: $${baseAmount}, channel limit: $${channelMaxAmount.toFixed(2)})`);
     } else {
-      balance = await exchange.getAccountBalance();
+      // Fallback to percentage-based calculation if no fixed amount set
+      let balance = 0;
+      
+      if (config.DRY_RUN) {
+        balance = dryRunState.balance;
+      } else {
+        balance = await exchange.getAccountBalance();
+      }
+      
+      const useTradePercent = tradePercent || config.MAX_TRADE_PERCENT;
+      amount = balance * (useTradePercent / 100);
+      console.log(`💸 [${channelDisplay}] ${config.DRY_RUN ? '[DRY RUN]' : ''} Using percentage fallback: ${useTradePercent}% = $${amount.toFixed(2)}`);
     }
     
-    // Apply channel-specific max trade percentage
-    const maxTradePercent = Math.min(channelConfig.maxTradePercent, config.MAX_TRADE_PERCENT);
-    const adjustedTradePercent = Math.min(tradePercent * channelConfig.riskMultiplier, maxTradePercent);
-    const amount = balance * (adjustedTradePercent / 100);
+    // Verify we have enough balance
+    if (!config.DRY_RUN) {
+      const balance = await exchange.getAccountBalance();
+      if (balance < amount) {
+        console.error(`❌ [${channelDisplay}] Insufficient balance: $${balance.toFixed(2)} < $${amount.toFixed(2)}`);
+        return { success: false, error: `Insufficient balance: $${balance.toFixed(2)}` };
+      }
+    }
     
-    console.log(`💸 [${channelDisplay}] ${config.DRY_RUN ? '[DRY RUN]' : ''} Buying amount: ${amount.toFixed(2)} USDC (${adjustedTradePercent.toFixed(1)}% of account, channel limit: ${maxTradePercent}%)`);
+    // For dry run, check virtual balance
+    if (config.DRY_RUN && dryRunState.balance < amount) {
+      console.error(`❌ [${channelDisplay}] [DRY RUN] Insufficient virtual balance: $${dryRunState.balance.toFixed(2)} < $${amount.toFixed(2)}`);
+      return { success: false, error: `Insufficient virtual balance: $${dryRunState.balance.toFixed(2)}` };
+    }
+    
+    console.log(`💰 [${channelDisplay}] ${config.DRY_RUN ? '[DRY RUN]' : ''} Trade amount: $${amount.toFixed(2)}`);
     
     // 2. Place market buy
     let buyOrder;
@@ -536,7 +562,7 @@ async function executeTrade(signal, metadata = {}) {
       channelId: channelId,
       channelName: channelConfig.name,
       channelConfig: channelConfig,
-      tradePercent: adjustedTradePercent,
+      tradeAmount: amount, // Store actual dollar amount used
       originalSignal: signal
     });
     
@@ -546,7 +572,8 @@ async function executeTrade(signal, metadata = {}) {
       amount: config.DRY_RUN ? dryRunState.positions[contractAddress].amount : amount,
       id: buyOrder.id,
       channelId: channelId,
-      channelName: channelConfig.name
+      channelName: channelConfig.name,
+      tradeAmount: amount
     };
     
   } catch (err) {
@@ -643,7 +670,7 @@ async function getActiveTrades() {
         profitPercent: profitPercent.toFixed(2) + '%',
         channelId: trade.channelId,
         channelName: trade.channelName,
-        tradePercent: trade.tradePercent
+        tradeAmount: trade.tradeAmount
       };
     } else {
       return {
@@ -652,7 +679,7 @@ async function getActiveTrades() {
         amount: trade.amount,
         channelId: trade.channelId,
         channelName: trade.channelName,
-        tradePercent: trade.tradePercent
+        tradeAmount: trade.tradeAmount
       };
     }
   });
@@ -701,7 +728,7 @@ function getChannelRecommendations(channelId) {
   return {
     channelName: channelConfig.name,
     recommendations: {
-      maxTradeSize: `${channelConfig.maxTradePercent}%`,
+      maxTradeAmount: `${channelConfig.maxTradeAmount.toFixed(2)}`,
       stopLoss: `${channelConfig.defaultStopLoss}%`,
       trailingStop: `${channelConfig.trailingStopDistance}%`,
       confidenceThreshold: channelConfig.confidenceThreshold,

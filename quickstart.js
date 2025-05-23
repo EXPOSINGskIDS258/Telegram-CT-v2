@@ -107,7 +107,7 @@ async function installDependencies() {
   }
 }
 
-// Quick configuration
+// Quick configuration with validation
 async function quickConfig() {
   console.log(`\n${colors.cyan}Quick Configuration${colors.reset}`);
   console.log(`${colors.yellow}We'll set up the essentials to get you started${colors.reset}\n`);
@@ -120,10 +120,13 @@ async function quickConfig() {
     // Trading mode
     DRY_RUN: await askYesNo('Start in Paper Trading mode?', true) ? 'true' : 'false',
     
+    // NEW: Fixed dollar amount with validation
+    TRADE_AMOUNT_USD: await askTradeAmount(),
+    
     // Channels
     USE_PREMIUM: await askYesNo('Use premium trading channels (recommended)?', true),
     
-    // Basic settings
+    // Basic settings (keep percentage as fallback)
     MAX_TRADE_PERCENT: '5',
     USE_TRAILING_STOP: 'true',
     TRAILING_STOP_PERCENT: '20',
@@ -139,6 +142,12 @@ async function quickConfig() {
     DRY_RUN_PRICE_VOLATILITY: '5',
     RPC_ENDPOINT: 'https://api.mainnet-beta.solana.com'
   };
+  
+  // Show trade amount explanation
+  console.log(`\n${colors.green}💰 Trade Amount Set: ${config.TRADE_AMOUNT_USD} per trade${colors.reset}`);
+  console.log(`   • Fixed dollar amount for consistent risk`);
+  console.log(`   • Easy to understand and control`);
+  console.log(`   • No percentage calculations needed`);
   
   // Set channels
   if (config.USE_PREMIUM) {
@@ -167,6 +176,60 @@ async function quickConfig() {
   return config;
 }
 
+// New function to ask for trade amount with validation
+async function askTradeAmount() {
+  let attempts = 0;
+  const maxAttempts = 3;
+  
+  while (attempts < maxAttempts) {
+    attempts++;
+    
+    const input = await ask('How much money per trade in USD [20]: ');
+    
+    // If they press enter without typing anything, use default
+    if (!input.trim()) {
+      console.log(`${colors.green}✅ Using default amount: $20${colors.reset}`);
+      return '20';
+    }
+    
+    // Validate the input
+    const amount = parseFloat(input.trim());
+    
+    if (isNaN(amount)) {
+      console.log(`${colors.red}❌ Invalid input! Please enter a valid number.${colors.reset}`);
+      console.log(`${colors.yellow}💡 Example: 20, 50, 100${colors.reset}`);
+      continue;
+    }
+    
+    if (amount <= 0) {
+      console.log(`${colors.red}❌ Amount must be greater than $0!${colors.reset}`);
+      console.log(`${colors.yellow}💡 Enter a positive dollar amount like 20 or 50${colors.reset}`);
+      continue;
+    }
+    
+    if (amount < 1) {
+      console.log(`${colors.red}❌ Minimum trade amount is $1!${colors.reset}`);
+      console.log(`${colors.yellow}💡 Use at least $1 per trade for realistic trading${colors.reset}`);
+      continue;
+    }
+    
+    if (amount > 10000) {
+      console.log(`${colors.red}❌ Maximum trade amount is $10,000!${colors.reset}`);
+      console.log(`${colors.yellow}💡 For safety, please use a smaller amount${colors.reset}`);
+      continue;
+    }
+    
+    // Valid amount
+    console.log(`${colors.green}✅ Trade amount set: ${amount}${colors.reset}`);
+    return amount.toString();
+  }
+  
+  // If all attempts failed, use default
+  console.log(`\n${colors.red}❌ Failed to set trade amount after 3 attempts.${colors.reset}`);
+  console.log(`${colors.yellow}🔄 Using default amount: $20${colors.reset}`);
+  return '20';
+}
+
 // Save configuration
 function saveConfig(config) {
   let envContent = `# CrestX Configuration
@@ -179,6 +242,7 @@ TELEGRAM_CHANNEL_IDS=${config.TELEGRAM_CHANNEL_IDS}
 
 # TRADING SETTINGS
 DRY_RUN=${config.DRY_RUN}
+TRADE_AMOUNT_USD=${config.TRADE_AMOUNT_USD}
 MAX_TRADE_PERCENT=${config.MAX_TRADE_PERCENT}
 USE_TRAILING_STOP=${config.USE_TRAILING_STOP}
 TRAILING_STOP_PERCENT=${config.TRAILING_STOP_PERCENT}

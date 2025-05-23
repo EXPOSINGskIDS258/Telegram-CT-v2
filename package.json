@@ -11,6 +11,8 @@
     "bot": "node index.js",
     "setup": "node setup.js",
     "quickstart": "node quickstart.js",
+    "browse-channels": "node browse-channels.js",
+    "channels": "node browse-channels.js",
     "menu": "node -e \"const {EnhancedMenu} = require('./enhanced-menu'); const menu = new EnhancedMenu(); menu.showMainMenu();\"",
     "build-exe": "pkg . --targets node18-win-x64 --output dist/crestx.exe",
     "build-linux": "pkg . --targets node18-linux-x64 --output dist/crestx-linux",
@@ -19,6 +21,9 @@
     "install-deps": "npm install @solana/web3.js@latest @solana/spl-token@latest",
     "test-config": "node -e \"require('./config'); console.log('✅ Configuration loaded successfully');\"",
     "test-safety": "node -e \"const safety = require('./tokenSafety'); console.log('✅ Safety module loaded');\"",
+    "test-buy": "node test.buy.js",
+    "test-performance": "node performance-test.js",
+    "test-quick": "node quick-test.js",
     "diagnostics": "node start.js && echo '5' | node start.js",
     "clean": "rm -rf node_modules package-lock.json && npm install",
     "update-deps": "npm update && npm audit fix",
@@ -61,7 +66,8 @@
     "cryptocurrency",
     "automated-trading",
     "telegram-bot",
-    "jupiter-dex"
+    "jupiter-dex",
+    "channel-browser"
   ],
   "author": "CrestX Team",
   "license": "MIT",

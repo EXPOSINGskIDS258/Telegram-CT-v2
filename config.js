@@ -14,7 +14,10 @@ module.exports = {
     ? process.env.TELEGRAM_CHANNEL_IDS.split(',').map(id => id.trim())
     : DEFAULT_CHANNELS, // Use default channels if none specified
     
-  // Trade settings
+  // Trade settings - NEW: Fixed dollar amount per trade
+  TRADE_AMOUNT_USD: parseFloat(process.env.TRADE_AMOUNT_USD) || 20,
+  
+  // Legacy percentage-based (kept as fallback)
   USE_TRAILING_STOP: process.env.USE_TRAILING_STOP === 'true',
   TRAILING_STOP_PERCENT: parseFloat(process.env.TRAILING_STOP_PERCENT) || 20,
   MAX_TRADE_PERCENT: parseFloat(process.env.MAX_TRADE_PERCENT) || 5,

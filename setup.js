@@ -150,13 +150,75 @@ class EnhancedSetup {
   async setupTradingParameters() {
     console.log('\n\x1b[1m\x1b[37m💰 STEP 3: TRADING PARAMETERS\x1b[0m');
     
-    const maxTrade = await this.askQuestion('💰 Maximum % of balance to risk per trade [5]: ') || '5';
-    this.config.MAX_TRADE_PERCENT = maxTrade;
+    // Ask for dollar amount with validation
+    let tradeAmount = null;
+    let attempts = 0;
+    const maxAttempts = 3;
     
-    console.log(`\n💡 Trade size explanation:`);
-    console.log(`   • With ${maxTrade}% per trade, you can make ~${Math.floor(100/parseFloat(maxTrade))} trades`);
-    console.log(`   • Higher % = bigger profits but higher risk`);
-    console.log(`   • Lower % = safer but smaller profits`);
+    while (!tradeAmount && attempts < maxAttempts) {
+      attempts++;
+      
+      const input = await this.askQuestion('💰 How much money per trade (in USD) [20]: ');
+      
+      // If they press enter without typing anything, use default
+      if (!input.trim()) {
+        tradeAmount = '20';
+        console.log('✅ \x1b[32mUsing default amount: $20\x1b[0m');
+        break;
+      }
+      
+      // Validate the input
+      const amount = parseFloat(input.trim());
+      
+      if (isNaN(amount)) {
+        console.log('\x1b[31m❌ Invalid input! Please enter a valid number.\x1b[0m');
+        console.log('\x1b[33m💡 Example: 20, 50, 100\x1b[0m');
+        continue;
+      }
+      
+      if (amount <= 0) {
+        console.log('\x1b[31m❌ Amount must be greater than $0!\x1b[0m');
+        console.log('\x1b[33m💡 Enter a positive dollar amount like 20 or 50\x1b[0m');
+        continue;
+      }
+      
+      if (amount < 1) {
+        console.log('\x1b[31m❌ Minimum trade amount is $1!\x1b[0m');
+        console.log('\x1b[33m💡 Use at least $1 per trade for realistic trading\x1b[0m');
+        continue;
+      }
+      
+      if (amount > 10000) {
+        console.log('\x1b[31m❌ Maximum trade amount is $10,000!\x1b[0m');
+        console.log('\x1b[33m💡 For safety, please use a smaller amount\x1b[0m');
+        continue;
+      }
+      
+      // Valid amount
+      tradeAmount = amount.toString();
+      console.log(`✅ \x1b[32mTrade amount set: ${amount}\x1b[0m`);
+    }
+    
+    if (!tradeAmount) {
+      console.log('\n\x1b[31m❌ Failed to set trade amount after 3 attempts.\x1b[0m');
+      console.log('\x1b[33m🔄 Using default amount: $20\x1b[0m');
+      tradeAmount = '20';
+    }
+    
+    this.config.TRADE_AMOUNT_USD = tradeAmount;
+    
+    // Calculate what percentage this represents (for display purposes)
+    const estimatedBalance = this.config.DRY_RUN === 'true' ? 1000 : 500; // Rough estimate
+    const estimatedPercent = (parseFloat(tradeAmount) / estimatedBalance * 100).toFixed(1);
+    
+    console.log(`\n💡 Trade amount explanation:`);
+    console.log(`   • ${tradeAmount} per trade`);
+    console.log(`   • Approximately ${estimatedPercent}% of a ${estimatedBalance} account`);
+    console.log(`   • Fixed dollar amount regardless of account size`);
+    console.log(`   • Easy to understand and control risk`);
+    
+    // Keep MAX_TRADE_PERCENT as backup for percentage-based channels
+    this.config.MAX_TRADE_PERCENT = '5'; // Default fallback
   }
 
   async setupRiskManagement() {
@@ -189,32 +251,56 @@ class EnhancedSetup {
     console.log('\n\x1b[1m\x1b[37m📡 STEP 5: SIGNAL CHANNELS\x1b[0m');
     console.log('CrestX monitors Telegram channels for trading signals.\n');
     
-    console.log('🔥 \x1b[1m\x1b[31mPREMIUM CHANNELS (RECOMMENDED):\x1b[0m');
-    console.log('   • Underdog Calls Private - High-quality memecoin signals');
-    console.log('   • Degen Channel - High-risk, high-reward calls');
-    console.log('   • Optimized parsing for these specific channels');
-    console.log('   • Better win rates and risk management\n');
+    console.log('📋 \x1b[1m\x1b[36mCHANNEL SETUP OPTIONS:\x1b[0m');
+    console.log('   1. 🔥 Premium Channels (Recommended)');
+    console.log('   2. 📱 Browse Your Telegram Channels');
+    console.log('   3. ⌨️  Manual Entry (Advanced)\n');
     
-    const usePremium = await this.askYesNo('Use recommended premium channels', true);
+    const setupChoice = await this.askQuestion('Choose setup method (1-3) [1]: ') || '1';
     
-    if (usePremium === 'true') {
-      this.config.TELEGRAM_CHANNEL_IDS = '-1002209371269,-1002277274250';
-      console.log('✅ \x1b[32mPremium channels configured!\x1b[0m');
-      
-      const addCustom = await this.askYesNo('Add additional custom channels', false);
-      if (addCustom === 'true') {
-        const customChannels = await this.askQuestion('📱 Enter custom channel IDs (comma-separated): ');
-        if (customChannels.trim()) {
-          this.config.TELEGRAM_CHANNEL_IDS += ',' + customChannels;
+    switch (setupChoice) {
+      case '1':
+        // Premium channels
+        this.config.TELEGRAM_CHANNEL_IDS = '-1002209371269,-1002277274250';
+        console.log('\n✅ \x1b[32mPremium channels configured:\x1b[0m');
+        console.log('   🔥 Underdog Calls Private - High-quality memecoin signals');
+        console.log('   💎 Degen Channel - High-risk, high-reward calls');
+        
+        const addMore = await this.askYesNo('Add additional channels from your Telegram', false);
+        if (addMore === 'true') {
+          const customChannels = await this.browseUserChannels();
+          if (customChannels) {
+            this.config.TELEGRAM_CHANNEL_IDS += ',' + customChannels;
+          }
         }
-      }
-    } else {
-      console.log('\n📋 How to find channel IDs:');
-      console.log('   1. Add @userinfobot to your Telegram');
-      console.log('   2. Forward a message from the channel to the bot');
-      console.log('   3. Copy the channel ID (starts with -100)\n');
-      
-      this.config.TELEGRAM_CHANNEL_IDS = await this.askQuestion('📱 Enter channel IDs (comma-separated): ');
+        break;
+        
+      case '2':
+        // Browse user's channels
+        const browsedChannels = await this.browseUserChannels();
+        if (browsedChannels) {
+          this.config.TELEGRAM_CHANNEL_IDS = browsedChannels;
+        } else {
+          console.log('\n🔄 Falling back to premium channels...');
+          this.config.TELEGRAM_CHANNEL_IDS = '-1002209371269,-1002277274250';
+        }
+        break;
+        
+      case '3':
+        // Manual entry
+        console.log('\n📋 \x1b[33mManual Channel Entry:\x1b[0m');
+        console.log('You can find channel IDs by:');
+        console.log('   1. Add @userinfobot to your Telegram');
+        console.log('   2. Forward a message from the channel to the bot');
+        console.log('   3. Copy the channel ID (starts with -100)\n');
+        
+        this.config.TELEGRAM_CHANNEL_IDS = await this.askQuestion('📱 Enter channel IDs (comma-separated): ');
+        break;
+        
+      default:
+        // Default to premium
+        this.config.TELEGRAM_CHANNEL_IDS = '-1002209371269,-1002277274250';
+        console.log('\n✅ \x1b[32mDefaulted to premium channels\x1b[0m');
     }
     
     if (!this.config.TELEGRAM_CHANNEL_IDS) {
@@ -222,7 +308,59 @@ class EnhancedSetup {
     }
     
     const channelCount = this.config.TELEGRAM_CHANNEL_IDS.split(',').length;
-    console.log(`✅ \x1b[32mConfigured ${channelCount} channel${channelCount > 1 ? 's' : ''} for monitoring!\x1b[0m`);
+    console.log(`\n🎉 \x1b[32mConfigured ${channelCount} channel${channelCount > 1 ? 's' : ''} for monitoring!\x1b[0m`);
+  }
+
+  async browseUserChannels() {
+    try {
+      console.log('\n🔄 \x1b[36mConnecting to your Telegram account to browse channels...\x1b[0m');
+      
+      const { TelegramChannelBrowser } = require('./telegram-channel-browser');
+      const browser = new TelegramChannelBrowser();
+      
+      // Initialize with user's API credentials
+      const connected = await browser.initialize(
+        parseInt(this.config.API_ID), 
+        this.config.API_HASH
+      );
+      
+      if (!connected) {
+        console.log('❌ \x1b[31mFailed to connect to Telegram\x1b[0m');
+        return null;
+      }
+      
+      // Let user select channels
+      const selectedChannels = await browser.selectChannels();
+      
+      if (selectedChannels.length === 0) {
+        console.log('⚠️ \x1b[33mNo channels selected\x1b[0m');
+        await browser.disconnect();
+        return null;
+      }
+      
+      // Show selected channels
+      console.log('\n✅ \x1b[32mSelected Channels:\x1b[0m');
+      selectedChannels.forEach((ch, i) => {
+        const icon = ch.isPremium ? '🔥' : browser.getTypeIcon(ch);
+        console.log(`   ${i + 1}. ${icon} ${ch.title}`);
+      });
+      
+      // Get channel IDs for configuration
+      const channelIds = browser.getChannelIds(selectedChannels);
+      
+      // Save session for future use
+      this.config.TELEGRAM_SESSION = browser.getSessionString();
+      
+      await browser.disconnect();
+      
+      console.log(`\n🎉 \x1b[32mSuccessfully configured ${selectedChannels.length} channels!\x1b[0m`);
+      return channelIds;
+      
+    } catch (error) {
+      console.error(`\n❌ \x1b[31mError browsing channels: ${error.message}\x1b[0m`);
+      console.log('\n💡 \x1b[33mTip: Make sure you have access to trading channels in your Telegram\x1b[0m');
+      return null;
+    }
   }
 
   async setupLiveTrading() {
@@ -376,7 +514,7 @@ class EnhancedSetup {
     
     const channelCount = this.config.TELEGRAM_CHANNEL_IDS.split(',').length;
     console.log(`║  Channels: ${channelCount} configured${' '.repeat(39)}║`);
-    console.log(`║  Max Trade Size: ${this.config.MAX_TRADE_PERCENT}%${' '.repeat(44)}║`);
+    console.log(`║  Trade Amount: $${this.config.TRADE_AMOUNT_USD} per trade${' '.repeat(33)}║`);
     console.log(`║  Trailing Stop: ${this.config.USE_TRAILING_STOP === 'true' ? 'Enabled' : 'Disabled'}${' '.repeat(43)}║`);
     console.log(`║  Safety Checks: ${this.config.ENABLE_SAFETY_CHECKS === 'true' ? 'Enabled' : 'Disabled'}${' '.repeat(43)}║`);
     console.log('║                                                              ║');
@@ -414,11 +552,12 @@ class EnhancedSetup {
 # TELEGRAM SETTINGS
 API_ID=${this.config.API_ID}
 API_HASH=${this.config.API_HASH}
-SESSION_NAME=
+SESSION_NAME=${this.config.TELEGRAM_SESSION || ''}
 TELEGRAM_CHANNEL_IDS=${this.config.TELEGRAM_CHANNEL_IDS}
 
 # TRADE SETTINGS
-MAX_TRADE_PERCENT=${this.config.MAX_TRADE_PERCENT}
+TRADE_AMOUNT_USD=${this.config.TRADE_AMOUNT_USD || '20'}
+MAX_TRADE_PERCENT=${this.config.MAX_TRADE_PERCENT || '5'}
 USE_TRAILING_STOP=${this.config.USE_TRAILING_STOP}
 TRAILING_STOP_PERCENT=${this.config.TRAILING_STOP_PERCENT || '20'}
 DEFAULT_SLIPPAGE=${this.config.DEFAULT_SLIPPAGE}
