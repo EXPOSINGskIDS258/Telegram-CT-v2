@@ -26,7 +26,7 @@ function validateTradeAmount(input) {
     return {
       isValid: false,
       value: null,
-      error: 'Invalid input! Please enter a valid number (e.g., 20, 0.50, $100).'
+      error: 'Invalid input! Please enter a valid number (e.g., 0.50, 20, $100).'
     };
   }
 
@@ -39,7 +39,7 @@ function validateTradeAmount(input) {
     };
   }
 
-  // Check realistic minimum (should be 1 cent, not $1)
+  // FIXED: Changed minimum from $1 to $0.01 (1 cent)
   if (amount < 0.01) {
     return {
       isValid: false,
@@ -57,12 +57,21 @@ function validateTradeAmount(input) {
     };
   }
 
-  // Warn about very small amounts
-  if (amount < 1) {
+  // Warn about very small amounts (changed threshold from $1 to $0.10)
+  if (amount < 0.10) {
     return {
       isValid: true,
       value: amount,
-      warning: `$${amount} is quite small. Consider using at least $10-20 for better results with real trading.`
+      warning: `$${amount} is very small. Great for testing! Consider $1+ for real trading.`
+    };
+  }
+
+  // Warn about small amounts (for amounts $0.10 to $5)
+  if (amount < 5) {
+    return {
+      isValid: true,
+      value: amount,
+      warning: `$${amount} is perfect for testing. Consider $10-20+ for more realistic trading results.`
     };
   }
 
@@ -300,8 +309,9 @@ function displayValidationHelp(type) {
     case 'trade_amount':
       console.log('\n💡 Trade Amount Examples:');
       console.log('   ✅ 0.01   (minimum - 1 cent)');
-      console.log('   ✅ 0.50   (50 cents)');
-      console.log('   ✅ $5     (good for testing)');
+      console.log('   ✅ 0.50   (50 cents - great for testing)');
+      console.log('   ✅ $1     (good for small tests)');
+      console.log('   ✅ 5      (good for testing)');
       console.log('   ✅ 20     (recommended for beginners)');
       console.log('   ✅ $50    (moderate risk)');
       console.log('   ✅ 100    (higher risk)');

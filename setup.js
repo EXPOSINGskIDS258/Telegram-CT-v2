@@ -150,7 +150,7 @@ class EnhancedSetup {
   async setupTradingParameters() {
     console.log('\n\x1b[1m\x1b[37m💰 STEP 3: TRADING PARAMETERS\x1b[0m');
     
-    // Ask for dollar amount with validation
+    // Ask for dollar amount with validation - FIXED TO ALLOW $0.01 MINIMUM
     let tradeAmount = null;
     let attempts = 0;
     const maxAttempts = 3;
@@ -167,24 +167,26 @@ class EnhancedSetup {
         break;
       }
       
-      // Validate the input
-      const amount = parseFloat(input.trim());
+      // Remove dollar sign if present
+      const cleanInput = input.trim().replace(/^\$/, '');
+      const amount = parseFloat(cleanInput);
       
       if (isNaN(amount)) {
         console.log('\x1b[31m❌ Invalid input! Please enter a valid number.\x1b[0m');
-        console.log('\x1b[33m💡 Example: 20, 50, 100\x1b[0m');
+        console.log('\x1b[33m💡 Example: 0.50, 5, 20, $100\x1b[0m');
         continue;
       }
       
       if (amount <= 0) {
         console.log('\x1b[31m❌ Amount must be greater than $0!\x1b[0m');
-        console.log('\x1b[33m💡 Enter a positive dollar amount like 20 or 50\x1b[0m');
+        console.log('\x1b[33m💡 Enter a positive dollar amount like 0.50 or 20\x1b[0m');
         continue;
       }
       
-      if (amount < 1) {
-        console.log('\x1b[31m❌ Minimum trade amount is $1!\x1b[0m');
-        console.log('\x1b[33m💡 Use at least $1 per trade for realistic trading\x1b[0m');
+      // FIXED: Changed minimum from $1 to $0.01 (1 cent)
+      if (amount < 0.01) {
+        console.log('\x1b[31m❌ Minimum trade amount is $0.01!\x1b[0m');
+        console.log('\x1b[33m💡 Use at least 1 cent per trade\x1b[0m');
         continue;
       }
       
@@ -196,7 +198,14 @@ class EnhancedSetup {
       
       // Valid amount
       tradeAmount = amount.toString();
-      console.log(`✅ \x1b[32mTrade amount set: ${amount}\x1b[0m`);
+      console.log(`✅ \x1b[32mTrade amount set: $${amount}\x1b[0m`);
+      
+      // Show helpful info for small amounts
+      if (amount < 1) {
+        console.log(`\x1b[33m💡 $${amount} is perfect for testing!\x1b[0m`);
+      } else if (amount < 5) {
+        console.log(`\x1b[33m💡 $${amount} is great for testing and small trades!\x1b[0m`);
+      }
     }
     
     if (!tradeAmount) {
@@ -212,8 +221,8 @@ class EnhancedSetup {
     const estimatedPercent = (parseFloat(tradeAmount) / estimatedBalance * 100).toFixed(1);
     
     console.log(`\n💡 Trade amount explanation:`);
-    console.log(`   • ${tradeAmount} per trade`);
-    console.log(`   • Approximately ${estimatedPercent}% of a ${estimatedBalance} account`);
+    console.log(`   • $${tradeAmount} per trade`);
+    console.log(`   • Approximately ${estimatedPercent}% of a $${estimatedBalance} account`);
     console.log(`   • Fixed dollar amount regardless of account size`);
     console.log(`   • Easy to understand and control risk`);
     

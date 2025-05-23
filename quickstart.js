@@ -144,7 +144,7 @@ async function quickConfig() {
   };
   
   // Show trade amount explanation
-  console.log(`\n${colors.green}💰 Trade Amount Set: ${config.TRADE_AMOUNT_USD} per trade${colors.reset}`);
+  console.log(`\n${colors.green}💰 Trade Amount Set: $${config.TRADE_AMOUNT_USD} per trade${colors.reset}`);
   console.log(`   • Fixed dollar amount for consistent risk`);
   console.log(`   • Easy to understand and control`);
   console.log(`   • No percentage calculations needed`);
@@ -176,7 +176,7 @@ async function quickConfig() {
   return config;
 }
 
-// New function to ask for trade amount with validation
+// FIXED: New function to ask for trade amount with proper validation
 async function askTradeAmount() {
   let attempts = 0;
   const maxAttempts = 3;
@@ -192,24 +192,26 @@ async function askTradeAmount() {
       return '20';
     }
     
-    // Validate the input
-    const amount = parseFloat(input.trim());
+    // Remove dollar sign if present
+    const cleanInput = input.trim().replace(/^\$/, '');
+    const amount = parseFloat(cleanInput);
     
     if (isNaN(amount)) {
       console.log(`${colors.red}❌ Invalid input! Please enter a valid number.${colors.reset}`);
-      console.log(`${colors.yellow}💡 Example: 20, 50, 100${colors.reset}`);
+      console.log(`${colors.yellow}💡 Example: 0.50, 5, 20, 100${colors.reset}`);
       continue;
     }
     
     if (amount <= 0) {
       console.log(`${colors.red}❌ Amount must be greater than $0!${colors.reset}`);
-      console.log(`${colors.yellow}💡 Enter a positive dollar amount like 20 or 50${colors.reset}`);
+      console.log(`${colors.yellow}💡 Enter a positive dollar amount like 0.50 or 20${colors.reset}`);
       continue;
     }
     
-    if (amount < 1) {
-      console.log(`${colors.red}❌ Minimum trade amount is $1!${colors.reset}`);
-      console.log(`${colors.yellow}💡 Use at least $1 per trade for realistic trading${colors.reset}`);
+    // FIXED: Changed minimum from $1 to $0.01 (1 cent)
+    if (amount < 0.01) {
+      console.log(`${colors.red}❌ Minimum trade amount is $0.01!${colors.reset}`);
+      console.log(`${colors.yellow}💡 Use at least 1 cent per trade${colors.reset}`);
       continue;
     }
     
@@ -219,8 +221,15 @@ async function askTradeAmount() {
       continue;
     }
     
-    // Valid amount
-    console.log(`${colors.green}✅ Trade amount set: ${amount}${colors.reset}`);
+    // Valid amount - show helpful messages for small amounts
+    if (amount < 1) {
+      console.log(`${colors.green}✅ Trade amount set: $${amount} (perfect for testing!)${colors.reset}`);
+    } else if (amount < 5) {
+      console.log(`${colors.green}✅ Trade amount set: $${amount} (great for testing!)${colors.reset}`);
+    } else {
+      console.log(`${colors.green}✅ Trade amount set: $${amount}${colors.reset}`);
+    }
+    
     return amount.toString();
   }
   
@@ -242,25 +251,25 @@ TELEGRAM_CHANNEL_IDS=${config.TELEGRAM_CHANNEL_IDS}
 
 # TRADING SETTINGS
 DRY_RUN=${config.DRY_RUN}
-TRADE_AMOUNT_USD=${config.TRADE_AMOUNT_USD}
-MAX_TRADE_PERCENT=${config.MAX_TRADE_PERCENT}
+TRADE_AMOUNT_USD=${config.TRADE_AMOUNT_USD || '20'}
+MAX_TRADE_PERCENT=${config.MAX_TRADE_PERCENT || '5'}
 USE_TRAILING_STOP=${config.USE_TRAILING_STOP}
-TRAILING_STOP_PERCENT=${config.TRAILING_STOP_PERCENT}
+TRAILING_STOP_PERCENT=${config.TRAILING_STOP_PERCENT || '20'}
 
 # SAFETY SETTINGS
 DEFAULT_SLIPPAGE=${config.DEFAULT_SLIPPAGE}
 EXIT_SLIPPAGE=${config.EXIT_SLIPPAGE}
-MIN_LIQUIDITY_USD=${config.MIN_LIQUIDITY_USD}
-MAX_PRICE_IMPACT=${config.MAX_PRICE_IMPACT}
-ENABLE_SAFETY_CHECKS=${config.ENABLE_SAFETY_CHECKS}
-MIN_TOKEN_AGE_SECONDS=${config.MIN_TOKEN_AGE_SECONDS}
+MIN_LIQUIDITY_USD=${config.MIN_LIQUIDITY_USD || '5000'}
+MAX_PRICE_IMPACT=${config.MAX_PRICE_IMPACT || '10'}
+ENABLE_SAFETY_CHECKS=${config.ENABLE_SAFETY_CHECKS || 'true'}
+MIN_TOKEN_AGE_SECONDS=${config.MIN_TOKEN_AGE_SECONDS || '300'}
 
 # PAPER TRADING SETTINGS
-DRY_RUN_BALANCE=${config.DRY_RUN_BALANCE}
-DRY_RUN_PRICE_VOLATILITY=${config.DRY_RUN_PRICE_VOLATILITY}
+DRY_RUN_BALANCE=${config.DRY_RUN_BALANCE || '1000'}
+DRY_RUN_PRICE_VOLATILITY=${config.DRY_RUN_PRICE_VOLATILITY || '5'}
 
 # SOLANA SETTINGS
-RPC_ENDPOINT=${config.RPC_ENDPOINT}
+RPC_ENDPOINT=${config.RPC_ENDPOINT || 'https://api.mainnet-beta.solana.com'}
 ${config.WALLET_PRIVATE_KEY ? `WALLET_PRIVATE_KEY=${config.WALLET_PRIVATE_KEY}` : '# WALLET_PRIVATE_KEY=your_key_here'}
 
 # NOTIFICATION SETTINGS
